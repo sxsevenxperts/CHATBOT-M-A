@@ -304,6 +304,20 @@ const api = (p, o = {}) => fetch('/admin/api' + p, {
              Authorization: 'Bearer ' + localStorage.getItem('maToken'), ...(o.headers || {}) }
 });
 
+/** Mostra no topo quando o dashboard perde contato com o servidor. */
+function conexaoOk(ok, err) {
+  const b = $('#banner');
+  if (ok) {
+    if (b.dataset.reason === 'conn') { b.style.display = 'none'; delete b.dataset.reason; }
+    return;
+  }
+  b.dataset.reason = 'conn';
+  b.style.display = 'block';
+  $('#bannerMsg').textContent =
+    `Sem conexão com o servidor (${String(err?.message || err)}). ` +
+    `Os dados na tela podem estar desatualizados. Verifique ${location.origin}/health`;
+}
+
 let knownUnseen = new Set();
 let firstLoad = true;
 let timer = null;
@@ -317,13 +331,26 @@ $('#loginForm').addEventListener('submit', async e => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: $('#pwd').value })
     });
-    if (!r.ok) { $('#loginErr').textContent = 'Senha incorreta.'; return; }
+    if (!r.ok) {
+      let detalhe = '';
+      try { detalhe = (await r.json()).error || ''; } catch {}
+      $('#loginErr').textContent = r.status === 401
+        ? 'Senha incorreta.'
+        : `Erro ${r.status}${detalhe ? ' — ' + detalhe : ''}`;
+      return;
+    }
     const { token } = await r.json();
     localStorage.setItem('maToken', token);
     unlockAudio();
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     boot();
-  } catch { $('#loginErr').textContent = 'Falha de conexão.'; }
+  } catch (e) {
+    // Genérico não ajuda ninguém: mostra o motivo e o endereço tentado.
+    $('#loginErr').innerHTML =
+      `Não foi possível falar com o servidor.<br><span style="color:var(--faint);font-size:11.5px">` +
+      `${String(e.message || e)} · ${location.origin}<br>` +
+      `Tente recarregar com Ctrl+Shift+R (ou Cmd+Shift+R).</span>`;
+  }
 });
 
 $('#btnLogout').onclick = () => { localStorage.removeItem('maToken'); clearInterval(timer); location.reload(); };
@@ -353,7 +380,11 @@ async function refresh() {
     renderFeed(await ms.json());
     renderStatus(await sr.json());
     checkNew(triages);
-  } catch (e) { console.error('refresh', e); }
+    conexaoOk(true);
+  } catch (e) {
+    console.error('refresh', e);
+    conexaoOk(false, e);
+  }
 }
 
 /* ---------------- Notificação ---------------- */
@@ -549,6 +580,7 @@ function renderStatus(s) {
   if (s.publicUrlSource === 'request') problemas.push('PUBLIC_URL não está definida — está sendo derivada do endereço acessado. Defina-a no EasyPanel para o webhook se ajustar sozinho no boot.');
 
   const banner = $('#banner');
+  if (banner.dataset.reason === 'conn') return;   // aviso de conexão tem prioridade
   if (problemas.length) {
     banner.style.display = 'block';
     $('#bannerMsg').textContent = problemas.join('  •  ');
