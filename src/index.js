@@ -3,12 +3,12 @@ dotenv.config();
 
 import express from 'express';
 import { initBot } from './bot.js';
-import { initDashboard } from './dashboard.js';
+import { initAdminDashboard } from './admin-dashboard.js';
 import { initSupabase } from './database.js';
 import { setupWebhook } from './webhook.js';
 
 const PORT = process.env.PORT || 3000;
-const DASHBOARD_PORT = process.env.DASHBOARD_PORT || 3001;
+const ADMIN_PORT = process.env.ADMIN_PORT || 3001;
 
 async function main() {
   try {
@@ -34,15 +34,19 @@ async function main() {
       console.log(`🔌 Servidor de webhook escutando na porta ${PORT}`);
     });
 
-    // Inicializa dashboard em porta diferente
-    console.log(`📈 Inicializando dashboard na porta ${DASHBOARD_PORT}...`);
-    initDashboard(DASHBOARD_PORT);
+    // Inicializa Admin Dashboard
+    console.log(`🎯 Inicializando Admin Dashboard na porta ${ADMIN_PORT}...`);
+    initAdminDashboard(ADMIN_PORT);
 
     console.log('\n✅ Sistema iniciado com sucesso!\n');
     console.log('📌 Webhook API: http://localhost:' + PORT);
-    console.log('📌 Dashboard: http://localhost:' + DASHBOARD_PORT);
-    console.log('📌 Senha dashboard: ' + (process.env.DASHBOARD_PASSWORD || 'admin123'));
-    console.log('\n⚠️  Configure o webhook no Evolution API Manager\n');
+    console.log('📌 Admin Dashboard: http://localhost:' + ADMIN_PORT);
+    console.log('📌 Senha: ' + (process.env.ADMIN_PASSWORD || 'admin123'));
+    console.log('\n🎯 Dashboard Features:');
+    console.log('   ✅ Conectar WhatsApp via Evolution API');
+    console.log('   ✅ Gerenciar triagens');
+    console.log('   ✅ Ver fluxo de mensagens');
+    console.log('   ✅ Múltiplas instâncias\n');
 
   } catch (error) {
     console.error('❌ Erro ao iniciar:', error);
