@@ -69,6 +69,21 @@ export async function getMessages(limit = 100) {
   return data;
 }
 
+/* ---------------- Keepalive ---------------- */
+
+/**
+ * Consulta mínima só para gerar atividade no projeto.
+ *
+ * O plano free do Supabase pausa projetos após 7 dias sem atividade e não
+ * oferece nenhuma opção para desligar isso. Uma consulta periódica mantém o
+ * contador zerado. Só o plano Pro remove o auto-pause por contrato.
+ */
+export async function keepalive() {
+  const { error } = await db().from('triages').select('id', { count: 'exact', head: true });
+  if (error) throw error;
+  return true;
+}
+
 /* ---------------- Triagens ---------------- */
 
 export async function saveTriage(t) {
