@@ -15,6 +15,11 @@ const WEBHOOK_PATH = '/webhook/messages';
 
 // Evolution reentrega o mesmo evento em falha de rede. Sem isto o cliente
 // recebe a mesma pergunta duas vezes.
+// Quantos eventos estão sendo processados agora. Serve de observabilidade em
+// /health e permite que os testes esperem a quiescência em vez de chutar sleeps.
+let inflight = 0;
+export const getInflight = () => inflight;
+
 const seenIds = new Set();
 const SEEN_MAX = 2000;
 
@@ -55,15 +60,33 @@ function extractText(message) {
 }
 
 export function setupWebhook(app) {
-  app.post(WEBHOOK_PATH, async (req, res) => {
-    // Sempre 200: erro nosso não deve virar retry-storm da Evolution.
-    // O que der errado aparece no log.
-    try {
-      const body = req.body || {};
+  app.post(WEBHOOK_PATH, (req, res) => {
+    // Responde na hora e processa depois.
+    //
+    // O atendimento leva alguns segundos de propósito (delay humanizado de
+    // 3–5s + envio pela Evolution). Se a resposta HTTP esperasse por isso, a
+    // Evolution estouraria o timeout dela e reentregaria o evento. A dedupe
+    // por id do `rememberId` cobre reentregas, mas não gerar retentativa é
+    // melhor do que absorvê-la.
+    res.status(200).json({ ok: true });
+
+    inflight++;
+    processar(req.body)
+      .catch(err => {
+        console.error('[webhook] erro ao processar:', err?.message || err);
+        if (err?.response?.data) console.error('[webhook] detalhe:', err.response.data);
+      })
+      .finally(() => { inflight--; });
+  });
+
+  async function processar(body) {
+    {
+      body = body || {};
       const event = String(body.event || '').toLowerCase();
 
       if (event && !event.startsWith('messages.upsert')) {
-        return res.status(200).json({ ignored: `evento ${event}` });
+        console.log(`[webhook] ignorado: evento ${event}`);
+        return;
       }
 
       // `data` costuma ser objeto, mas algumas versões mandam array.
@@ -96,16 +119,12 @@ export function setupWebhook(app) {
 
         console.log(`[webhook] ← ${phone} (${pushName || 'sem nome'}): ${text || '[sem texto]'}`);
 
+        // Sequencial de propósito: duas mensagens do mesmo cliente no mesmo
+        // lote precisam avançar o fluxo em ordem.
         await handleMessage({ phone, text, pushName });
       }
-
-      return res.status(200).json({ ok: true });
-    } catch (error) {
-      console.error('[webhook] erro ao processar:', error?.message || error);
-      if (error?.response?.data) console.error('[webhook] detalhe:', error.response.data);
-      return res.status(200).json({ ok: false, error: error?.message });
     }
-  });
+  }
 
   // Sonda de saúde: confirma no navegador que a rota existe.
   app.get(WEBHOOK_PATH, (_req, res) =>

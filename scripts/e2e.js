@@ -109,8 +109,23 @@ async function incoming(text, { fromMe = false, jid = JID, id = null, pushName =
       }
     })
   });
-  await sleep(1000);
+  await quiesce();     // a rota responde na hora; espera o fluxo terminar
   return res;
+}
+
+/** Espera o app terminar de processar todos os eventos recebidos. */
+async function quiesce(timeoutMs = 15000) {
+  const limite = Date.now() + timeoutMs;
+  await sleep(60);                       // dá tempo do contador subir
+  while (Date.now() < limite) {
+    try {
+      const r = await fetch(`http://localhost:${APP_PORT}/health`);
+      const { inflight } = await r.json();
+      if (!inflight) { await sleep(120); return; }   // margem para o último await
+    } catch {}
+    await sleep(100);
+  }
+  throw new Error('processamento não terminou no tempo esperado');
 }
 
 const sb = createClient(

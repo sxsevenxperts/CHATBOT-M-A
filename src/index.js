@@ -2,8 +2,8 @@ import './env.js';                 // carrega o .env antes de tudo
 import { str, num } from './env.js';
 import express from 'express';
 
-import { initSupabase } from './database.js';
-import { setupWebhook, WEBHOOK_PATH } from './webhook.js';
+import { initSupabase, keepalive } from './database.js';
+import { setupWebhook, WEBHOOK_PATH, getInflight } from './webhook.js';
 import { setupAdmin } from './admin.js';
 import { checkConnection, getWebhook, setWebhook, getConfig } from './evolution.js';
 
@@ -25,6 +25,7 @@ const PUBLIC_URL = str('PUBLIC_URL').replace(/\/+$/, '');
 const state = {
   startedAt: new Date().toISOString(),
   db: { ok: false, error: null },
+  keepalive: { enabled: false, everyHours: null, lastOk: null, lastError: null, runs: 0 },
   whatsapp: { ok: false, error: null, info: null },
   webhook: { ok: false, error: null, url: null },
   env: {}
@@ -100,6 +101,43 @@ async function initDependencies() {
   }
 }
 
+/**
+ * Mantém o projeto Supabase acordado.
+ *
+ * O plano free pausa após 7 dias de inatividade e não há como desativar isso
+ * no painel — dois projetos do usuário já pausaram assim. Este intervalo gera
+ * atividade real no banco. Depende do container continuar rodando; se o app
+ * for parado por muitos dias, só o plano Pro garante que nada pause.
+ */
+function startKeepalive() {
+  const hours = num('KEEPALIVE_HOURS', 6);
+  if (hours <= 0) {
+    console.log('[keepalive] desativado (KEEPALIVE_HOURS=0)');
+    return;
+  }
+
+  state.keepalive.enabled = true;
+  state.keepalive.everyHours = hours;
+
+  const tick = async () => {
+    try {
+      await keepalive();
+      state.keepalive.lastOk = new Date().toISOString();
+      state.keepalive.lastError = null;
+      state.keepalive.runs++;
+      console.log(`[keepalive] ok (${state.keepalive.runs}) — projeto Supabase ativo`);
+    } catch (e) {
+      state.keepalive.lastError = e.message;
+      console.error('[keepalive] falhou:', e.message);
+    }
+  };
+
+  const timer = setInterval(tick, hours * 3600_000);
+  timer.unref?.();
+  tick();   // uma vez já no boot
+  console.log(`[keepalive] ativo — consulta a cada ${hours}h`);
+}
+
 function buildApp() {
   const app = express();
   app.disable('x-powered-by');
@@ -111,6 +149,7 @@ function buildApp() {
     ok: state.db.ok,
     ready: state.db.ok && state.whatsapp.ok,
     uptime: Math.round(process.uptime()),
+    inflight: getInflight(),
     ...state
   }));
 
@@ -152,6 +191,7 @@ async function main() {
   }
 
   await initDependencies();
+  if (state.db.ok) startKeepalive();
 
   const base = PUBLIC_URL || `http://localhost:${PORT}`;
   console.log('\n' + (state.db.ok ? '✔ Pronto.' : '⚠ No ar, mas DEGRADADO.'));
@@ -160,6 +200,7 @@ async function main() {
   console.log(`  Saúde      ${base}/health`);
   console.log(`  Delay      ${num('REPLY_DELAY_MIN_MS', 3000)}–${num('REPLY_DELAY_MAX_MS', 5000)} ms`);
   console.log(`  Rearme     ${num('REARM_HOURS', 24)}h após o último contato`);
+  console.log(`  Keepalive  ${state.keepalive.enabled ? `a cada ${state.keepalive.everyHours}h (anti-pause do Supabase free)` : 'desativado'}`);
 
   if (missing.length) console.log(`\n  ✖ faltam variáveis: ${missing.join(', ')}`);
   if (!state.db.ok) console.log(`  ✖ banco: ${state.db.error}`);
