@@ -243,6 +243,11 @@
     </div>
   </header>
 
+  <div id="banner" style="display:none;background:rgba(194,96,79,.12);border:1px solid rgba(194,96,79,.45);border-left:3px solid var(--red);border-radius:12px;padding:14px 18px;margin-bottom:18px">
+    <span class="label" style="color:var(--red)">Atenção</span>
+    <p id="bannerMsg" style="font-size:13.5px;margin-top:4px"></p>
+  </div>
+
   <section class="stats">
     <div class="stat hi"><div class="n" id="sPending">—</div><span class="label">Aguardando</span></div>
     <div class="stat"><div class="n" id="sContacted">—</div><span class="label">Em atendimento</span></div>
@@ -534,6 +539,22 @@ function renderFeed(list) {
 
 function renderStatus(s) {
   const wa = s.whatsapp || {}, wh = s.webhook || {};
+
+  // Diagnóstico de boot: variável faltando ou banco fora do ar.
+  const boot = s.boot || {};
+  const faltando = boot.env?.missing || [];
+  const problemas = [];
+  if (faltando.length) problemas.push(`Variáveis de ambiente faltando no servidor: ${faltando.join(', ')}. Adicione no EasyPanel e faça redeploy.`);
+  if (boot.db && boot.db.ok === false) problemas.push(`Banco de dados inacessível: ${boot.db.error}`);
+  if (s.publicUrlSource === 'request') problemas.push('PUBLIC_URL não está definida — está sendo derivada do endereço acessado. Defina-a no EasyPanel para o webhook se ajustar sozinho no boot.');
+
+  const banner = $('#banner');
+  if (problemas.length) {
+    banner.style.display = 'block';
+    $('#bannerMsg').textContent = problemas.join('  •  ');
+  } else {
+    banner.style.display = 'none';
+  }
 
   const pw = $('#pillWa'); pw.querySelector('.dot').className = 'dot ' + (wa.connected ? 'on' : 'off');
   pw.lastChild.textContent = wa.connected ? ` WhatsApp ${wa.profileName ? '· ' + wa.profileName : ''}` : ' WhatsApp offline';

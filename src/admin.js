@@ -54,7 +54,7 @@ function publicUrlFor(req, configured) {
   return `${proto}://${host}`;
 }
 
-export function setupAdmin(app, { publicUrl }) {
+export function setupAdmin(app, { publicUrl, state = {} }) {
   app.set('trust proxy', true);
   /* ---------- página ---------- */
   app.use('/admin/assets', express.static(PUBLIC_DIR, { maxAge: '1h' }));
@@ -75,11 +75,13 @@ export function setupAdmin(app, { publicUrl }) {
   api.use(requireAuth);
 
   api.get('/status', wrap(async (req, res) => {
-    const cfg = getConfig();
+    let cfg = { baseUrl: null, instance: null };
+    try { cfg = getConfig(); } catch (e) { cfg = { baseUrl: null, instance: null, error: e.message }; }
     const base = publicUrlFor(req, publicUrl);
     const out = {
       baseUrl: cfg.baseUrl, instance: cfg.instance,
-      publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request'
+      publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request',
+      boot: { db: state.db, env: state.env }
     };
 
     try {
