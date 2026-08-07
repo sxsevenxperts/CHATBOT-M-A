@@ -1,26 +1,32 @@
 {
-  "name": "m-a-whatsapp-bot",
-  "version": "1.0.0",
-  "description": "WhatsApp Bot de Triagem para M & A Lava a Jato",
+  "name": "ma-lavajato-atendimento",
+  "version": "2.0.0",
+  "description": "Triagem automática no WhatsApp para M & A Lava a Jato — Evolution API + Supabase + dashboard de atendimento",
   "main": "src/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/flow.js && node --check src/webhook.js && node --check src/admin.js && node --check src/evolution.js && node --check src/database.js",
+    "doctor": "node scripts/doctor.js",
+    "test": "node scripts/e2e.js"
   },
-  "keywords": ["whatsapp", "bot", "triagem"],
+  "keywords": [
+    "whatsapp",
+    "evolution-api",
+    "supabase",
+    "atendimento",
+    "triagem"
+  ],
   "author": "sxsevenxperts",
   "license": "MIT",
   "dependencies": {
-    "@supabase/supabase-js": "^2.38.4",
-    "express": "^4.18.2",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5",
-    "axios": "^1.6.2",
-    "pino": "^8.17.2",
-    "pino-pretty": "^10.3.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
+    "@supabase/supabase-js": "^2.45.4",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
   }
 }

@@ -1,20 +1,17 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
-
-# Copiar package.json e instalar dependências
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Copiar código
-COPY src ./src
-
-# Variáveis de ambiente
 ENV NODE_ENV=production
-ENV PORT=3000
 
-# Expor porta
-EXPOSE 3000
+# Dependências primeiro: aproveita o cache de layer entre deploys.
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Iniciar aplicação
+COPY src ./src
+COPY public ./public
+
+# 3000 = padrão; 3001 fica exposta porque o domínio do EasyPanel pode
+# estar apontado para ela (o app escuta nas duas).
+EXPOSE 3000 3001
+
 CMD ["node", "src/index.js"]
