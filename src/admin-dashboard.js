@@ -13,25 +13,19 @@ const evolutionClient = axios.create({
   }
 });
 
-export function initAdminDashboard(port) {
-  const app = express();
-
-  app.use(express.json());
-  app.use(express.static('public'));
-
+export function setupAdminRoutes(app) {
   const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+
   const authMiddleware = (req, res, next) => {
-    if (req.path === '/api/login') return next();
+    if (req.path === '/admin/api/login') return next();
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Não autenticado' });
     if (auth.substring(7) !== ADMIN_PASSWORD) return res.status(403).json({ error: 'Credenciais inválidas' });
     next();
   };
 
-  app.use(authMiddleware);
-
   // Login
-  app.post('/api/login', (req, res) => {
+  app.post('/admin/api/login', (req, res) => {
     const { password } = req.body;
     if (password === ADMIN_PASSWORD) {
       res.json({ token: ADMIN_PASSWORD });
@@ -40,8 +34,11 @@ export function initAdminDashboard(port) {
     }
   });
 
+  // Middleware de auth para rotas protegidas
+  app.use('/admin/api', authMiddleware);
+
   // Evolution API - Listar instâncias
-  app.get('/api/evolution/instances', async (req, res) => {
+  app.get('/admin/api/evolution/instances', async (req, res) => {
     try {
       const { data } = await evolutionClient.get('/instance/fetchInstances');
       res.json(data.instances || []);
@@ -51,7 +48,7 @@ export function initAdminDashboard(port) {
   });
 
   // Evolution API - Conectar nova instância
-  app.post('/api/evolution/connect', async (req, res) => {
+  app.post('/admin/api/evolution/connect', async (req, res) => {
     try {
       const { instanceName } = req.body;
 
@@ -72,7 +69,7 @@ export function initAdminDashboard(port) {
   });
 
   // Evolution API - QR Code
-  app.get('/api/evolution/qr/:instanceName', async (req, res) => {
+  app.get('/admin/api/evolution/qr/:instanceName', async (req, res) => {
     try {
       const { instanceName } = req.params;
       const { data } = await evolutionClient.get(`/instance/fetchInstances`);
@@ -93,7 +90,7 @@ export function initAdminDashboard(port) {
   });
 
   // Triagens
-  app.get('/api/triages', async (req, res) => {
+  app.get('/admin/api/triages', async (req, res) => {
     try {
       const triages = await getTriages();
       res.json(triages);
@@ -103,7 +100,7 @@ export function initAdminDashboard(port) {
   });
 
   // Atualizar triagem
-  app.put('/api/triages/:id', async (req, res) => {
+  app.put('/admin/api/triages/:id', async (req, res) => {
     try {
       const { id } = req.params;
       const { status } = req.body;
@@ -115,12 +112,8 @@ export function initAdminDashboard(port) {
   });
 
   // Dashboard HTML
-  app.get('/', (req, res) => {
+  app.get('/admin', (req, res) => {
     res.send(getDashboardHTML());
-  });
-
-  app.listen(port, () => {
-    console.log(`\n🎯 Admin Dashboard: http://localhost:${port}`);
   });
 }
 
@@ -380,7 +373,7 @@ function getDashboardHTML() {
 
     async function login() {
       const password = document.getElementById('passwordInput').value;
-      const res = await fetch('/api/login', {
+      const res = await fetch('/admin/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
@@ -405,7 +398,7 @@ function getDashboardHTML() {
 
     async function loadTriages() {
       const token = localStorage.getItem('adminToken');
-      const res = await fetch('/api/triages', {
+      const res = await fetch('/admin/api/triages', {
         headers: { 'Authorization': 'Bearer ' + token }
       });
 
@@ -441,7 +434,7 @@ function getDashboardHTML() {
 
     async function updateStatus(id, status) {
       const token = localStorage.getItem('adminToken');
-      await fetch(\`/api/triages/\${id}\`, {
+      await fetch(\`/admin/api/triages/\${id}\`, {
         method: 'PUT',
         headers: {
           'Authorization': 'Bearer ' + token,
@@ -457,7 +450,7 @@ function getDashboardHTML() {
       if (!instanceName) { alert('Digite o nome da instância'); return; }
 
       const token = localStorage.getItem('adminToken');
-      const res = await fetch('/api/evolution/connect', {
+      const res = await fetch('/admin/api/evolution/connect', {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + token,
@@ -478,7 +471,7 @@ function getDashboardHTML() {
 
     async function refreshInstances() {
       const token = localStorage.getItem('adminToken');
-      const res = await fetch('/api/evolution/instances', {
+      const res = await fetch('/admin/api/evolution/instances', {
         headers: { 'Authorization': 'Bearer ' + token }
       });
 
