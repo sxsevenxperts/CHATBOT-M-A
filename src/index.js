@@ -15,68 +15,116 @@ const ALT_PORT = num('ALT_PORT', 3001);
 const PUBLIC_URL = str('PUBLIC_URL').replace(/\/+$/, '');
 
 /**
- * Aponta o webhook da Evolution para esta aplicação, se ainda não estiver.
- * É isto que evita o passo manual no Evolution Manager — e conserta sozinho
- * a URL errada com `:3000` que o domínio HTTPS não atende.
+ * Estado de inicialização, exposto em /health e no dashboard.
+ *
+ * O servidor HTTP sobe ANTES de checar dependências. Se o app morresse por
+ * falta de env var, o proxy devolveria 502 e ninguém saberia o motivo — foi
+ * exatamente o que aconteceu no primeiro deploy. Agora ele sobe sempre e diz
+ * o que está faltando.
  */
-async function ensureWebhook() {
-  if (!PUBLIC_URL) {
-    console.warn('[boot] PUBLIC_URL não definida — webhook não será sincronizado automaticamente.');
-    return;
-  }
+const state = {
+  startedAt: new Date().toISOString(),
+  db: { ok: false, error: null },
+  whatsapp: { ok: false, error: null, info: null },
+  webhook: { ok: false, error: null, url: null },
+  env: {}
+};
 
-  const expected = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+function checkEnv() {
+  const req = ['SUPABASE_URL', 'EVOLUTION_API_URL', 'EVOLUTION_API_KEY', 'EVOLUTION_INSTANCE'];
+  const missing = req.filter(k => !str(k));
+  if (!str('SUPABASE_SERVICE_KEY') && !str('SUPABASE_KEY')) missing.push('SUPABASE_SERVICE_KEY');
 
-  try {
-    const current = await getWebhook();
-    if (current?.enabled && current?.url === expected) {
-      console.log(`[boot] webhook já correto: ${expected}`);
-      return;
-    }
-    console.log(`[boot] webhook atual: ${current?.url || '(nenhum)'} → corrigindo`);
-    await setWebhook(expected);
-    console.log(`[boot] webhook apontado para ${expected} (evento: MESSAGES_UPSERT)`);
-  } catch (e) {
-    console.error('[boot] falha ao sincronizar webhook:', e?.response?.data || e.message);
+  state.env = {
+    missing,
+    publicUrl: PUBLIC_URL || '(derivada do request)',
+    hasAdminPassword: !!(str('ADMIN_PASSWORD') || str('DASHBOARD_PASSWORD'))
+  };
+
+  if (missing.length) {
+    console.error(`\n[boot] ✖ VARIÁVEIS FALTANDO: ${missing.join(', ')}`);
+    console.error('[boot]   Adicione nas variáveis de ambiente do EasyPanel e faça redeploy.\n');
   }
+  return missing;
 }
 
-async function main() {
-  console.log('\n── M & A Lava a Jato · Atendimento WhatsApp ──\n');
-
-  // 1. Banco: falha ruidosamente, porque sem ele nada funciona.
-  console.log('[boot] conectando ao Supabase…');
-  await initSupabase();
-  console.log('[boot] Supabase ok (triages, bot_sessions, messages)');
-
-  // 2. Evolution: aviso, não erro — o app sobe e o dashboard mostra o QR.
-  const { baseUrl, instance } = getConfig();
-  console.log(`[boot] Evolution: ${baseUrl} · instância "${instance}"`);
+async function initDependencies() {
+  // Banco
   try {
+    await initSupabase();
+    state.db.ok = true;
+    console.log('[boot] Supabase ok (triages, bot_sessions, messages)');
+  } catch (e) {
+    state.db.error = e.message;
+    console.error('[boot] ✖ Supabase:', e.message);
+  }
+
+  // Evolution
+  try {
+    const { baseUrl, instance } = getConfig();
+    console.log(`[boot] Evolution: ${baseUrl} · instância "${instance}"`);
     const wa = await checkConnection();
+    state.whatsapp = { ok: wa.connected, error: null, info: wa };
     console.log(
       wa.connected
         ? `[boot] WhatsApp conectado: ${wa.ownerJid} (${wa.profileName || 'sem nome'})`
         : `[boot] WhatsApp NÃO conectado (status: ${wa.status}) — escaneie o QR em /admin`
     );
   } catch (e) {
-    console.error('[boot] Evolution inacessível:', e.message);
+    state.whatsapp.error = e.message;
+    console.error('[boot] ✖ Evolution:', e.message);
   }
 
-  // 3. HTTP
+  // Webhook: aponta para cá sozinho, se soubermos a URL pública.
+  if (!PUBLIC_URL) {
+    state.webhook.error = 'PUBLIC_URL não definida — sincronize pelo dashboard';
+    console.warn('[boot] PUBLIC_URL não definida — webhook não sincronizado no boot');
+    return;
+  }
+
+  const expected = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+  try {
+    const current = await getWebhook();
+    if (current?.enabled && current?.url === expected) {
+      state.webhook = { ok: true, error: null, url: expected };
+      console.log(`[boot] webhook já correto: ${expected}`);
+      return;
+    }
+    console.log(`[boot] webhook atual: ${current?.url || '(nenhum)'} → corrigindo`);
+    await setWebhook(expected);
+    state.webhook = { ok: true, error: null, url: expected };
+    console.log(`[boot] webhook apontado para ${expected} (evento: MESSAGES_UPSERT)`);
+  } catch (e) {
+    state.webhook.error = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
+    console.error('[boot] ✖ webhook:', state.webhook.error);
+  }
+}
+
+function buildApp() {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
 
-  app.get('/health', (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
+  // Sempre 200: o proxy precisa de uma resposta para não devolver 502.
+  // O corpo diz se algo está degradado.
+  app.get('/health', (_req, res) => res.json({
+    ok: state.db.ok,
+    ready: state.db.ok && state.whatsapp.ok,
+    uptime: Math.round(process.uptime()),
+    ...state
+  }));
+
   app.get('/', (_req, res) => res.redirect('/admin'));
 
   setupWebhook(app);
-  setupAdmin(app, { publicUrl: PUBLIC_URL || `http://localhost:${PORT}` });
+  setupAdmin(app, { publicUrl: PUBLIC_URL, state });
 
   app.use((req, res) => res.status(404).json({ error: 'not found', path: req.path }));
+  return app;
+}
 
-  const listen = port => new Promise(resolve => {
+function listen(app, port) {
+  return new Promise(resolve => {
     const server = app.listen(port, '0.0.0.0', () => {
       console.log(`[boot] escutando na porta ${port}`);
       resolve(server);
@@ -86,27 +134,41 @@ async function main() {
       resolve(null);
     });
   });
+}
 
-  await listen(PORT);
-  if (ALT_PORT && ALT_PORT !== PORT) await listen(ALT_PORT);
+async function main() {
+  console.log('\n── M & A Lava a Jato · Atendimento WhatsApp ──\n');
 
-  // 4. Webhook depois do listen: a Evolution pode validar a URL na hora.
-  await ensureWebhook();
+  const missing = checkEnv();
+  const app = buildApp();
 
-  const dMin = num('REPLY_DELAY_MIN_MS', 3000);
-  const dMax = num('REPLY_DELAY_MAX_MS', 5000);
-  const rearm = num('REARM_HOURS', 24);
+  // HTTP primeiro: garante que o painel abra e mostre o diagnóstico.
+  const primary = await listen(app, PORT);
+  if (ALT_PORT && ALT_PORT !== PORT) await listen(app, ALT_PORT);
 
-  console.log('\n✔ Pronto.');
-  console.log(`  Dashboard  ${PUBLIC_URL || `http://localhost:${PORT}`}/admin`);
-  console.log(`  Webhook    ${PUBLIC_URL || `http://localhost:${PORT}`}${WEBHOOK_PATH}`);
-  console.log('  Fluxo      boas-vindas → assunto → veículo → atendimento humano');
-  console.log(`  Delay      ${dMin}–${dMax} ms antes de cada resposta`);
-  console.log(`  Rearme     ${rearm}h após o último contato\n`);
+  if (!primary) {
+    console.error('[boot] ✖ nenhuma porta disponível — encerrando');
+    process.exit(1);
+  }
+
+  await initDependencies();
+
+  const base = PUBLIC_URL || `http://localhost:${PORT}`;
+  console.log('\n' + (state.db.ok ? '✔ Pronto.' : '⚠ No ar, mas DEGRADADO.'));
+  console.log(`  Dashboard  ${base}/admin`);
+  console.log(`  Webhook    ${base}${WEBHOOK_PATH}`);
+  console.log(`  Saúde      ${base}/health`);
+  console.log(`  Delay      ${num('REPLY_DELAY_MIN_MS', 3000)}–${num('REPLY_DELAY_MAX_MS', 5000)} ms`);
+  console.log(`  Rearme     ${num('REARM_HOURS', 24)}h após o último contato`);
+
+  if (missing.length) console.log(`\n  ✖ faltam variáveis: ${missing.join(', ')}`);
+  if (!state.db.ok) console.log(`  ✖ banco: ${state.db.error}`);
+  console.log('');
 }
 
 main().catch(err => {
-  console.error('\n✖ Falha ao iniciar:', err.message, '\n');
+  // Último recurso: nem assim derruba o processo sem explicar.
+  console.error('\n✖ Falha inesperada no boot:', err?.stack || err.message, '\n');
   process.exit(1);
 });
 
