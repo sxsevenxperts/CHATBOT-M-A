@@ -220,6 +220,7 @@
       <button class="btn btn-primary btn-block" type="submit">Entrar</button>
     </form>
     <div class="err" id="loginErr"></div>
+    <div class="label" style="margin-top:20px;font-size:9.5px;color:var(--faint)">build {{BUILD}}</div>
   </div>
 </section>
 
@@ -365,6 +366,25 @@ function boot() {
 }
 
 if (localStorage.getItem('maToken')) boot();
+
+/**
+ * Se o servidor foi atualizado depois desta aba carregar, o JS em memória está
+ * velho. Avisa em vez de deixar o usuário brigando com um erro que já não existe.
+ */
+const BUILD_CARREGADO = '{{BUILD}}';
+setInterval(async () => {
+  try {
+    const r = await fetch('/admin/api/build', { cache: 'no-store' });
+    const { build } = await r.json();
+    if (build && build !== BUILD_CARREGADO) {
+      const b = $('#banner');
+      b.dataset.reason = 'stale';
+      b.style.display = 'block';
+      $('#bannerMsg').textContent =
+        'Esta página é de uma versão anterior do sistema. Recarregue com Ctrl+Shift+R (ou Cmd+Shift+R) para atualizar.';
+    }
+  } catch {}
+}, 30000);
 
 /* ---------------- Refresh ---------------- */
 async function refresh() {

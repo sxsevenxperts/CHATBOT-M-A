@@ -3,6 +3,7 @@ import { str } from './env.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import express from 'express';
 
 import {
@@ -57,10 +58,31 @@ function publicUrlFor(req, configured) {
 export function setupAdmin(app, { publicUrl, state = {} }) {
   app.set('trust proxy', true);
   /* ---------- página ---------- */
-  app.use('/admin/assets', express.static(PUBLIC_DIR, { maxAge: '1h' }));
-  app.get(['/admin', '/admin/'], (_req, res) =>
-    res.sendFile(path.join(PUBLIC_DIR, 'admin.html'))
-  );
+  // no-store no HTML: uma aba aberta durante um deploy antigo continuava
+  // rodando o JS velho e mostrando erros que já não existiam no servidor.
+  // O selo de build deixa óbvio qual versão está carregada.
+  const BUILD = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  const htmlPath = path.join(PUBLIC_DIR, 'admin.html');
+
+  app.use('/admin/assets', express.static(PUBLIC_DIR, { maxAge: '5m' }));
+
+  app.get(['/admin', '/admin/'], (_req, res) => {
+    let html;
+    try {
+      html = fs.readFileSync(htmlPath, 'utf8').replace(/\{\{BUILD\}\}/g, BUILD);
+    } catch (e) {
+      return res.status(500).send('admin.html não encontrado: ' + e.message);
+    }
+    res.set({
+      'Cache-Control': 'no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Content-Type': 'text/html; charset=utf-8'
+    });
+    res.send(html);
+  });
+
+  app.get('/admin/api/build', (_req, res) => res.json({ build: BUILD }));
 
   /* ---------- login (rota pública) ---------- */
   app.post('/admin/api/login', (req, res) => {
