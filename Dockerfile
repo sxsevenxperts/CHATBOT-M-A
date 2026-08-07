@@ -1,4 +1,6 @@
-FROM node:20-alpine
+# Node 22+: o @supabase/supabase-js precisa do WebSocket global, que não
+# existe no Node 20 ("native WebSocket not found") e derruba o initSupabase.
+FROM node:22-alpine
 
 WORKDIR /app
 ENV NODE_ENV=production
