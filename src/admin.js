@@ -40,7 +40,22 @@ const wrap = fn => (req, res) =>
     res.status(500).json({ error: err?.message || 'Erro interno' });
   });
 
+/**
+ * URL pública desta aplicação.
+ *
+ * Prefere PUBLIC_URL; se não houver, deriva do próprio request (o EasyPanel
+ * envia x-forwarded-proto/host). Sem isto, um ambiente sem PUBLIC_URL faria
+ * "Sincronizar webhook" apontar a Evolution para localhost — quebrando o bot.
+ */
+function publicUrlFor(req, configured) {
+  if (configured) return configured;
+  const proto = req.headers['x-forwarded-proto']?.split(',')[0]?.trim() || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host']?.split(',')[0]?.trim() || req.headers.host;
+  return `${proto}://${host}`;
+}
+
 export function setupAdmin(app, { publicUrl }) {
+  app.set('trust proxy', true);
   /* ---------- página ---------- */
   app.use('/admin/assets', express.static(PUBLIC_DIR, { maxAge: '1h' }));
   app.get(['/admin', '/admin/'], (_req, res) =>
@@ -59,9 +74,13 @@ export function setupAdmin(app, { publicUrl }) {
   const api = express.Router();
   api.use(requireAuth);
 
-  api.get('/status', wrap(async (_req, res) => {
+  api.get('/status', wrap(async (req, res) => {
     const cfg = getConfig();
-    const out = { baseUrl: cfg.baseUrl, instance: cfg.instance, publicUrl };
+    const base = publicUrlFor(req, publicUrl);
+    const out = {
+      baseUrl: cfg.baseUrl, instance: cfg.instance,
+      publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request'
+    };
 
     try {
       out.whatsapp = await checkConnection();
@@ -71,7 +90,7 @@ export function setupAdmin(app, { publicUrl }) {
 
     try {
       const wh = await getWebhook();
-      const expected = `${publicUrl}/webhook/messages`;
+      const expected = `${base}/webhook/messages`;
       out.webhook = {
         url: wh?.url || null,
         enabled: !!wh?.enabled,
@@ -86,8 +105,15 @@ export function setupAdmin(app, { publicUrl }) {
     res.json(out);
   }));
 
-  api.post('/webhook/sync', wrap(async (_req, res) => {
-    const url = `${publicUrl}/webhook/messages`;
+  api.post('/webhook/sync', wrap(async (req, res) => {
+    const base = publicUrlFor(req, publicUrl);
+    // Guarda-corpo: apontar a Evolution para localhost silencia o bot.
+    if (/^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(base)) {
+      return res.status(400).json({
+        error: `URL pública inválida (${base}). Defina PUBLIC_URL nas variáveis de ambiente.`
+      });
+    }
+    const url = `${base}/webhook/messages`;
     const result = await setWebhook(url);
     console.log(`[admin] webhook apontado para ${url}`);
     res.json({ ok: true, url, result });
