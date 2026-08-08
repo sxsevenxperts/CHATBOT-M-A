@@ -186,27 +186,66 @@ export function extractAll(text) {
 /* ---------------- Escolha em menu ---------------- */
 
 /**
- * Casa a resposta com uma opção: número, rótulo exato ou palavra marcante.
+ * Palavras que aparecem em vários rótulos e por isso não distinguem nada.
+ * Sem removê-las, "quero lavar" empatava entre "Quero lavar meu veículo" e
+ * "Quero agendar" — e o bot pedia para repetir.
+ */
+const RUIDO = new Set([
+  'quero', 'queria', 'gostaria', 'meu', 'minha', 'veiculo', 'carro', 'uma', 'um',
+  'tenho', 'qual', 'sei', 'escolher', 'ainda', 'nao', 'mais', 'para', 'pra', 'com'
+]);
+
+function significativas(label) {
+  const todas = norm(label).split(/[\s/]+/).filter(Boolean);
+  const filtradas = todas.filter(w => w.length > 3 && !RUIDO.has(w));
+  // Rótulos feitos só de ruído ("Outro") ficariam sem nada para casar.
+  return filtradas.length ? filtradas : todas.filter(w => w.length > 2);
+}
+
+/**
+ * Casa a resposta com uma opção do menu.
+ *
+ * Em camadas, da mais confiável para a mais frouxa:
+ *   1. número  2. rótulo exato  3. sinônimo do catálogo
+ *   4. rótulo mais longo contido na resposta  5. palavra significativa
+ *
+ * A camada 4 existe porque "quero uma lavagem detalhada" contém tanto
+ * "Lavagem" quanto "Lavagem detalhada": o mais longo é o certo.
+ *
  * @param {string} text
- * @param {Array<{label:string}>} options
+ * @param {Array<{label:string, syn?:string[]}>} options
  * @returns {string|null} o rótulo escolhido
  */
 export function matchOption(text, options) {
   const t = norm(text);
+  if (!t) return null;
 
+  // 1 · número
   const num = t.match(/^([1-9])[\s).:·\-]*$/);
   if (num) {
     const i = Number(num[1]) - 1;
     if (i >= 0 && i < options.length) return options[i].label;
   }
 
+  // 2 · rótulo exato
   const exato = options.find(o => norm(o.label) === t);
   if (exato) return exato.label;
 
-  // Palavra significativa do rótulo (>3 letras) presente na resposta.
-  const parciais = options.filter(o =>
-    norm(o.label).split(/[\s/]+/).some(w => w.length > 3 && t.includes(w))
-  );
+  // 3 · sinônimo — preferindo o mais específico (mais longo)
+  const porSinonimo = options
+    .flatMap(o => (o.syn || []).map(s => ({ label: o.label, s: norm(s) })))
+    .filter(({ s }) => s && new RegExp(`(^|[^a-z0-9])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(t))
+    .sort((a, b) => b.s.length - a.s.length);
+  if (porSinonimo.length) return porSinonimo[0].label;
+
+  // 4 · rótulo inteiro contido na resposta — o mais longo ganha
+  const contidos = options
+    .filter(o => t.includes(norm(o.label)))
+    .sort((a, b) => norm(b.label).length - norm(a.label).length);
+  if (contidos.length) return contidos[0].label;
+
+  // 5 · palavra significativa; ambiguidade real devolve null e o fluxo repergunta
+  const parciais = options.filter(o => significativas(o.label).some(w => t.includes(w)));
   return parciais.length === 1 ? parciais[0].label : null;
 }
 

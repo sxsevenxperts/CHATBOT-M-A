@@ -10,6 +10,7 @@ import {
   extractAll, matchOption, nameFromAnswer, extractVehicle,
   extractDate, extractPeriod, norm
 } from './extract.js';
+import { info, warn } from './recorder.js';
 
 /**
  * Atendimento em 6 etapas, com árvore de decisão dinâmica.
@@ -235,7 +236,7 @@ function pergunta(step, d) {
 
     default:
       // Nunca deve acontecer: proximoPasso() só devolve passos conhecidos.
-      console.warn(`[flow] pergunta() sem caso para "${step}"`);
+      warn('flow.perguntaSemCaso', { passo: step });
       return 'Como podemos ajudar você hoje?\n\n' + menu(INTENTS) + RODAPE_MENU;
   }
 }
@@ -402,11 +403,13 @@ async function encerrar(phone, d) {
 
   await reply(phone, `${msg}\n\n${ASSINATURA}`);
 
-  console.log(
-    `[flow] triagem #${triage.id} — ${nome} (${phone}) · ${d.category || '—'} ` +
-    `${d.vehicle || '—'} · ${d.service || d.intent} · ${d.level || '—'} · ` +
-    `${[d.date_pref, d.period].filter(Boolean).join(' ') || 'sem preferência'} → humano`
-  );
+  info('flow.handoff', {
+    triagem: triage.id, cliente: nome, de: phone,
+    categoria: d.category, veiculo: d.vehicle,
+    servico: d.service || d.intent, nivel: d.level,
+    quando: [d.date_pref, d.period].filter(Boolean).join(' ') || 'sem preferência',
+    noHorario: aberto
+  });
   return triage;
 }
 
@@ -421,7 +424,7 @@ export async function handleMessage({ phone, text, pushName }) {
   if (session) {
     const horas = (Date.now() - new Date(session.updated_at).getTime()) / 3600_000;
     if (horas >= REARM_HOURS()) {
-      console.log(`[flow] ${phone}: ${horas.toFixed(1)}h sem contato — bot rearmado`);
+      info('flow.rearmado', { de: phone, horasSemContato: horas.toFixed(1) });
       session = null;
     }
   }
@@ -429,7 +432,7 @@ export async function handleMessage({ phone, text, pushName }) {
   // Já com a atendente: bot em silêncio, só empurra a janela.
   if (session?.handed_off) {
     await saveSession(phone, {});
-    console.log(`[flow] ${phone} em atendimento humano — bot silenciado`);
+    info('flow.silenciado', { de: phone, motivo: 'em atendimento humano' });
     return { action: 'silenced' };
   }
 
@@ -454,6 +457,7 @@ export async function handleMessage({ phone, text, pushName }) {
       Object.assign(d, semSobrescrever(d, extractAll(text)));
       if (JSON.stringify(d) === antes) {
         await saveSession(phone, { step: passoAnterior, data: d });
+        info('flow.naoEntendi', { de: phone, passo: passoAnterior, texto: text });
         await reply(phone, 'Desculpe, não compreendi. 🙂\n\n' + pergunta(passoAnterior, d));
         return { action: 'retry' };
       }
@@ -480,6 +484,7 @@ export async function handleMessage({ phone, text, pushName }) {
   }
 
   await saveSession(phone, { step: passo, data: d, handed_off: false });
+  info('flow.passo', { de: phone, passo, cliente: d.name || '—' });
 
   const partes = [];
 

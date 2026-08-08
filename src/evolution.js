@@ -114,6 +114,7 @@ export async function sendPresence(number, presence = 'composing') {
   } catch {
     /* indicador é cosmético — nunca deve bloquear a resposta */
   }
+
 }
 
 /** Aponta o webhook da instância para a nossa URL, só com os eventos que usamos. */

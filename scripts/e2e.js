@@ -60,7 +60,8 @@ const app = spawn(process.execPath, ['src/index.js'], {
     PORT: String(APP_PORT), ALT_PORT: String(APP_PORT),
     PUBLIC_URL: `http://localhost:${APP_PORT}`,
     REPLY_DELAY_MIN_MS: '250', REPLY_DELAY_MAX_MS: '350',
-    KEEPALIVE_HOURS: '0',
+    KEEPALIVE_HOURS: '0', REARM_HOURS: '24',
+    TEST_PHONES: [A, B, C, '5588000000094'].join(','),
     NODE_ENV: 'test'
   },
   stdio: ['ignore', 'pipe', 'pipe']
@@ -370,6 +371,88 @@ try {
     gap >= 250 && gap < 2500 ? ok(`delay aplicado: ${gap}ms (250–350ms + latência do banco)`) : no(`delay fora do esperado: ${gap}ms`);
   } else ok('sem resposta (cliente já em handoff) — delay verificado nas etapas acima');
 
+  /* ---------- 11b · matchOption com texto livre ---------- */
+  head('11b · Reconhecimento de resposta livre nos menus');
+  {
+    const { matchOption } = await import('../src/extract.js');
+    const { SERVICES, INTENTS, CATEGORIES, LEVELS, PERIODS, DATES, NEEDS } = await import('../src/catalog.js');
+    // Casos que falhavam antes: palavra compartilhada ("quero") empatava as
+    // opções, e sinônimos reais do cliente ("preço", "só lavar") não existiam.
+    const casos = [
+      [SERVICES, 'quero lavagem', 'Lavagem'],
+      [SERVICES, 'quero uma lavagem detalhada', 'Lavagem detalhada'],
+      [SERVICES, 'so lavar', 'Lavagem'],
+      [SERVICES, 'os bancos estão sujos', 'Higienização interna'],
+      [SERVICES, 'não sei', 'Ainda não sei qual escolher'],
+      [INTENTS, 'quero lavar', 'Quero lavar meu veículo'],
+      [INTENTS, 'preço', 'Consultar valores'],
+      [INTENTS, 'quanto custa', 'Consultar valores'],
+      [CATEGORIES, 'caminhonete', 'Picape'],
+      [LEVELS, 'quero a top', 'Premium'],
+      [PERIODS, 'fim da tarde', 'Final da tarde'],
+      [DATES, 'fim de semana', 'Sábado'],
+      [NEEDS, 'tá com riscos', 'Riscos/marcas na pintura']
+    ];
+    let ruins = 0;
+    for (const [lista, entrada, esperado] of casos) {
+      if (matchOption(entrada, lista) !== esperado) { ruins++; no(`"${entrada}" → esperava ${esperado}`); }
+    }
+    if (!ruins) ok(`${casos.length} respostas livres reconhecidas corretamente`);
+  }
+
+  /* ---------- 11c · Caixa preta ---------- */
+  head('11c · Caixa preta registra os eventos');
+  {
+    const r = await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=200`);
+    r.status === 401 ? ok('caixa preta protegida sem token') : no(`log exposto: ${r.status}`);
+
+    const login0 = await fetch(`http://localhost:${APP_PORT}/admin/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: process.env.ADMIN_PASSWORD })
+    });
+    const tk = (await login0.json()).token;
+    const d = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`,
+      { headers: { Authorization: 'Bearer ' + tk } })).json();
+
+    const nomes = new Set((d.eventos || []).map(e => e.event));
+    d.eventos?.length ? ok(`${d.eventos.length} eventos registrados`) : no('nenhum evento');
+    nomes.has('webhook.recebido') ? ok('registra mensagem recebida') : no('não registra recebimento');
+    nomes.has('webhook.ignorado') ? ok('registra o motivo de ignorar (fromMe, grupo, reentrega)') : no('não registra descartes');
+    nomes.has('flow.passo') ? ok('registra o avanço do fluxo') : no('não registra passos');
+    nomes.has('flow.handoff') ? ok('registra o handoff') : no('não registra handoff');
+    nomes.has('flow.silenciado') ? ok('registra o silêncio pós-handoff') : no('não registra silêncio');
+    nomes.has('flow.rearmado') ? ok('registra o rearme de 24h') : no('não registra rearme');
+    d.resumo?.capacidade === 400 ? ok('anel limitado a 400 eventos') : no(`capacidade: ${d.resumo?.capacidade}`);
+
+    const filtrado = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?level=error`,
+      { headers: { Authorization: 'Bearer ' + tk } })).json();
+    (filtrado.eventos || []).every(e => e.level === 'error') ? ok('filtro por nível funciona') : no('filtro por nível falhou');
+
+    const handoff = (d.eventos || []).find(e => e.event === 'flow.handoff');
+    handoff?.meta?.triagem ? ok('handoff carrega o número da triagem') : no('handoff sem triagem no meta');
+  }
+
+  /* ---------- 11d · Ping público anti-pause ---------- */
+  head('11d · Ping público toca o banco sem credencial');
+  {
+    const r = await fetch(`http://localhost:${APP_PORT}/ping`);
+    const j = await r.json();
+    r.ok ? ok('/ping responde 200 sem token') : no(`/ping: ${r.status}`);
+    j.db === true ? ok('/ping confirma que o banco respondeu') : no('/ping não confirmou o banco');
+    !JSON.stringify(j).match(/phone|name|vehicle/i) ? ok('/ping não expõe dado de cliente') : no('/ping expõe dados');
+  }
+
+  /* ---------- 11e · Config verificável no /health ---------- */
+  head('11e · /health expõe a configuração em vigor');
+  {
+    const h = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+    h.config ? ok('config presente no /health') : no('config ausente');
+    h.config?.rearmeHoras === 24 ? ok('rearme = 24h (verificável sem ler log)') : no(`rearme: ${h.config?.rearmeHoras}`);
+    Array.isArray(h.config?.delayMs) ? ok(`delay declarado: ${h.config.delayMs.join('–')}ms`) : no('delay ausente');
+    h.config?.fuso ? ok(`fuso: ${h.config.fuso}`) : no('fuso ausente');
+    h.caixaPreta?.capacidade ? ok('resumo da caixa preta no /health') : no('caixa preta ausente do /health');
+  }
+
   /* ---------- 12 · API e dashboard ---------- */
   head('12 · API e dashboard');
   const login = await fetch(`http://localhost:${APP_PORT}/admin/api/login`, {
@@ -382,7 +465,7 @@ try {
   (await fetch(`http://localhost:${APP_PORT}/admin/api/triages`)).status === 401
     ? ok('API protegida sem token') : no('API exposta');
 
-  const lista = await (await fetch(`http://localhost:${APP_PORT}/admin/api/triages`,
+  const lista = await (await fetch(`http://localhost:${APP_PORT}/admin/api/triages?testes=1`,
     { headers: { Authorization: 'Bearer ' + token } })).json();
   Array.isArray(lista) ? ok(`API devolve ${lista.length} triagens`) : no('API não devolveu lista');
   lista.some(r => r.level && r.category && r.vehicle)
@@ -396,10 +479,86 @@ try {
   !html.includes('{{BUILD}}') ? ok('selo de build injetado') : no('selo de build não substituído');
   html.includes('#C61C29') ? ok('paleta da marca aplicada (#C61C29)') : no('paleta da marca ausente');
   html.includes('/admin/assets/badge.png') ? ok('badge da marca no hero e no header') : no('badge ausente');
+  html.includes('Caixa preta') ? ok('painel da caixa preta na página') : no('painel da caixa preta ausente');
+  html.includes('SX SEVEN XPERTS') && html.includes('32.794.007/0001-19')
+    ? ok('rodapé com assinatura e CNPJ da SX') : no('rodapé da SX ausente');
+  html.includes('--sx-lima') && html.includes('--sx-turquesa')
+    ? ok('degradê verde-limão → turquesa da SX definido') : no('cores da SX ausentes');
 
   for (const asset of ['badge.png', 'logo.png', 'favicon.png', 'apple-touch-icon.png']) {
     const r = await fetch(`http://localhost:${APP_PORT}/admin/assets/${asset}`);
     r.ok ? ok(`asset servido: ${asset}`) : no(`asset ${asset}: ${r.status}`);
+  }
+
+  /* ---------- 13 · Produção mostra só conversa real ---------- */
+  head('13 · Solicitações: só conversa real, com filtro de período');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token } };
+    const get = async q => (await fetch(`http://localhost:${APP_PORT}/admin/api/${q}`, auth)).json();
+
+    // O banco pode ter atendimento real de verdade. Os asserts comparam com o
+    // conjunto de números da suíte, nunca com "zero".
+    const NOSSOS = new Set([A, B, C, '5588000000094']);
+    const nossos = arr => arr.filter(r => NOSSOS.has(r.phone));
+
+    const comTestes = await get('triages?testes=1');
+    const nossasTriagens = nossos(comTestes);
+    nossasTriagens.length ? ok(`?testes=1 traz as ${nossasTriagens.length} triagens da suíte`) : no('?testes=1 não trouxe as triagens da suíte');
+    nossasTriagens.every(r => r.is_test === true)
+      ? ok('todas marcadas como is_test') : no('alguma triagem da suíte não foi marcada');
+
+    const padrao = await get('triages');
+    nossos(padrao).length === 0
+      ? ok('padrão esconde testes — em produção só atendimento real aparece')
+      : no(`padrão vazou ${nossos(padrao).length} linha(s) de teste`);
+    padrao.every(r => r.is_test === false) ? ok('nenhuma linha visível está marcada como teste') : no('linha de teste visível no padrão');
+
+    const st = await get('stats');
+    st.testes >= nossasTriagens.length ? ok(`stats informa ${st.testes} testes ocultos`) : no(`stats.testes = ${st.testes}`);
+    st.total === padrao.length ? ok(`stats.total (${st.total}) bate com a lista visível`) : no(`stats.total ${st.total} ≠ lista ${padrao.length}`);
+
+    const msgs = await get('messages');
+    nossos(msgs).length === 0 ? ok('fluxo de mensagens também esconde testes') : no(`${nossos(msgs).length} mensagens de teste visíveis`);
+
+    // Período
+    const hoje = new Date().toISOString().slice(0, 10);
+    const amanha = new Date(Date.now() + 86400_000).toISOString().slice(0, 10);
+    const depois = new Date(Date.now() + 2 * 86400_000).toISOString().slice(0, 10);
+
+    const doDia = nossos(await get(`triages?testes=1&de=${hoje}&ate=${hoje}`));
+    doDia.length === nossasTriagens.length ? ok('filtro "hoje" inclui o dia inteiro') : no(`hoje: ${doDia.length}/${nossasTriagens.length}`);
+
+    const futuro = await get(`triages?testes=1&de=${amanha}&ate=${depois}`);
+    nossos(futuro).length === 0 ? ok('período futuro devolve vazio') : no(`período futuro devolveu ${nossos(futuro).length}`);
+
+    const invalida = await get('triages?testes=1&de=nao-e-data');
+    Array.isArray(invalida) ? ok('data inválida é ignorada, não quebra a rota') : no('data inválida quebrou a rota');
+
+    const sessoesAntes = (await sb.from('bot_sessions').select('phone,is_test')).data || [];
+    const nossasSessoes = sessoesAntes.filter(r => NOSSOS.has(r.phone));
+    nossasSessoes.length && nossasSessoes.every(r => r.is_test === true)
+      ? ok(`sessões da suíte marcadas como teste (${nossasSessoes.length})`)
+      : no(`sessões não marcadas: ${JSON.stringify(nossasSessoes)}`);
+
+    /* ---------- purge: apaga as fixtures, por último ---------- */
+    const reaisAntes = (await sb.from('triages').select('phone').eq('is_test', false)).data?.length ?? 0;
+
+    const del = await (await fetch(`http://localhost:${APP_PORT}/admin/api/testes`,
+      { method: 'DELETE', ...auth })).json();
+    del.ok ? ok('rota de limpeza respondeu') : no('limpeza falhou');
+    del.apagados?.triages >= nossasTriagens.length
+      ? ok(`apagou ${del.apagados.triages} triagens, ${del.apagados.messages} mensagens, ${del.apagados.bot_sessions} sessões`)
+      : no(`apagou pouco: ${JSON.stringify(del.apagados)}`);
+    del.apagados?.bot_sessions >= nossasSessoes.length
+      ? ok('sessões de teste também foram apagadas') : no(`sessões apagadas: ${del.apagados?.bot_sessions}`);
+
+    const sobrouTeste = (await sb.from('triages').select('phone').eq('is_test', true)).data?.length ?? 0;
+    sobrouTeste === 0 ? ok('nenhum teste sobrou no banco') : no(`sobraram ${sobrouTeste} testes`);
+
+    const reaisDepois = (await sb.from('triages').select('phone').eq('is_test', false)).data?.length ?? 0;
+    reaisDepois === reaisAntes
+      ? ok(`atendimentos reais intactos (${reaisDepois}) — a limpeza não os toca`)
+      : no(`real perdido: ${reaisAntes} → ${reaisDepois}`);
   }
 
 } catch (err) {

@@ -7,40 +7,53 @@
  * se mexe quando a conversa muda.
  */
 
+// `syn` são as palavras que o cliente realmente usa. Sem elas, "preço" e
+// "só lavar" não casavam com nenhuma opção.
 export const INTENTS = [
-  { key: 'lavar',    emoji: '🚘', label: 'Quero lavar meu veículo' },
-  { key: 'estetica', emoji: '✨', label: 'Estética / detalhamento' },
-  { key: 'agendar',  emoji: '📅', label: 'Quero agendar' },
-  { key: 'valores',  emoji: '💰', label: 'Consultar valores' },
-  { key: 'duvida',   emoji: '❓', label: 'Tenho outra dúvida' }
+  { key: 'lavar',    emoji: '🚘', label: 'Quero lavar meu veículo',
+    syn: ['lavar', 'lavagem', 'lavou', 'limpar', 'limpeza'] },
+  { key: 'estetica', emoji: '✨', label: 'Estética / detalhamento',
+    syn: ['estetica', 'detalhamento', 'detailing', 'polimento', 'vitrificacao'] },
+  { key: 'agendar',  emoji: '📅', label: 'Quero agendar',
+    syn: ['agendar', 'agendamento', 'marcar', 'horario', 'reservar'] },
+  { key: 'valores',  emoji: '💰', label: 'Consultar valores',
+    syn: ['valor', 'valores', 'preco', 'precos', 'quanto', 'orcamento', 'tabela'] },
+  { key: 'duvida',   emoji: '❓', label: 'Tenho outra dúvida',
+    syn: ['duvida', 'pergunta', 'informacao', 'outra coisa'] }
 ];
 
 export const CATEGORIES = [
-  { emoji: '🚗', label: 'Hatch / Compacto' },
-  { emoji: '🚘', label: 'Sedan' },
-  { emoji: '🚙', label: 'SUV' },
-  { emoji: '🛻', label: 'Picape' },
-  { emoji: '🚐', label: 'Outro' }
+  { emoji: '🚗', label: 'Hatch / Compacto', syn: ['hatch', 'compacto', 'popular', 'pequeno'] },
+  { emoji: '🚘', label: 'Sedan',            syn: ['sedan', 'seda'] },
+  { emoji: '🚙', label: 'SUV',              syn: ['suv', 'utilitario'] },
+  { emoji: '🛻', label: 'Picape',           syn: ['picape', 'pickup', 'pick up', 'caminhonete'] },
+  { emoji: '🚐', label: 'Outro',            syn: ['outro', 'outra', 'moto', 'van', 'kombi', 'caminhao'] }
 ];
 
 export const SERVICES = [
-  { emoji: '🧼', label: 'Lavagem' },
-  { emoji: '✨', label: 'Lavagem detalhada' },
-  { emoji: '🛋️', label: 'Higienização interna' },
-  { emoji: '💎', label: 'Polimento / pintura' },
-  { emoji: '🛡️', label: 'Proteção / vitrificação' },
-  { emoji: '🔎', label: 'Ainda não sei qual escolher' },
-  { emoji: '➕', label: 'Outro serviço' }
+  { emoji: '🧼', label: 'Lavagem',
+    syn: ['lavagem', 'lavar', 'lavagem simples', 'lavagem comum', 'limpar', 'limpeza'] },
+  { emoji: '✨', label: 'Lavagem detalhada',
+    syn: ['detalhada', 'detalhado', 'detalhamento', 'lavagem detalhada', 'detailing'] },
+  { emoji: '🛋️', label: 'Higienização interna',
+    syn: ['higienizacao', 'higienizar', 'estofado', 'estofados', 'banco', 'bancos', 'interna', 'interior'] },
+  { emoji: '💎', label: 'Polimento / pintura',
+    syn: ['polimento', 'polir', 'pintura', 'espelhamento', 'risco', 'riscos'] },
+  { emoji: '🛡️', label: 'Proteção / vitrificação',
+    syn: ['protecao', 'proteger', 'vitrificacao', 'vitrificar', 'coating', 'selante', 'cristalizacao'] },
+  { emoji: '🔎', label: 'Ainda não sei qual escolher',
+    syn: ['nao sei', 'ainda nao sei', 'sei nao', 'me ajuda', 'nao tenho certeza'] },
+  { emoji: '➕', label: 'Outro serviço', syn: ['outro servico', 'outro'] }
 ];
 
 export const NEEDS = [
-  { label: 'Sujeira do dia a dia' },
-  { label: 'Bancos/estofados sujos' },
-  { label: 'Manchas ou mau cheiro' },
-  { label: 'Pintura sem brilho' },
-  { label: 'Riscos/marcas na pintura' },
-  { label: 'Quero deixar o carro impecável' },
-  { label: 'Outro problema' }
+  { label: 'Sujeira do dia a dia',        syn: ['sujeira', 'poeira', 'barro', 'lama', 'sujo'] },
+  { label: 'Bancos/estofados sujos',      syn: ['banco', 'bancos', 'estofado', 'estofados', 'tecido'] },
+  { label: 'Manchas ou mau cheiro',       syn: ['mancha', 'manchas', 'cheiro', 'mau cheiro', 'odor', 'mofo'] },
+  { label: 'Pintura sem brilho',          syn: ['sem brilho', 'opaca', 'fosca', 'desbotada', 'brilho'] },
+  { label: 'Riscos/marcas na pintura',    syn: ['risco', 'riscos', 'arranhao', 'marca', 'marcas'] },
+  { label: 'Quero deixar o carro impecável', syn: ['impecavel', 'novo', 'zero', 'perfeito', 'showroom'] },
+  { label: 'Outro problema',              syn: ['outro problema', 'outro', 'outra coisa'] }
 ];
 
 /** Da dor relatada para o serviço indicado. Base da recomendação. */
@@ -55,22 +68,25 @@ export const NEED_TO_SERVICE = {
 };
 
 export const LEVELS = [
-  { emoji: '⚡', label: 'Essencial', hint: 'manutenção e limpeza do dia a dia' },
-  { emoji: '⭐', label: 'Completa',  hint: 'cuidado interno + externo' },
-  { emoji: '💎', label: 'Premium',   hint: 'tratamento mais detalhado' }
+  { emoji: '⚡', label: 'Essencial', hint: 'manutenção e limpeza do dia a dia',
+    syn: ['essencial', 'simples', 'basica', 'basico', 'rapida', 'rapido'] },
+  { emoji: '⭐', label: 'Completa',  hint: 'cuidado interno + externo',
+    syn: ['completa', 'completo', 'full'] },
+  { emoji: '💎', label: 'Premium',   hint: 'tratamento mais detalhado',
+    syn: ['premium', 'top', 'melhor', 'caprichada'] }
 ];
 
 export const PERIODS = [
-  { emoji: '☀️', label: 'Manhã' },
-  { emoji: '🌤️', label: 'Tarde' },
-  { emoji: '🌙', label: 'Final da tarde' }
+  { emoji: '☀️', label: 'Manhã',          syn: ['manha', 'de manha', 'matutino', 'cedo'] },
+  { emoji: '🌤️', label: 'Tarde',          syn: ['tarde', 'a tarde', 'vespertino'] },
+  { emoji: '🌙', label: 'Final da tarde', syn: ['final da tarde', 'fim da tarde', 'fim do dia', 'final do dia'] }
 ];
 
 export const DATES = [
-  { label: 'Amanhã' },
-  { label: 'Próximo dia útil' },
-  { label: 'Sábado' },
-  { label: 'Outra data' }
+  { label: 'Amanhã',           syn: ['amanha'] },
+  { label: 'Próximo dia útil', syn: ['dia util', 'proximo dia', 'durante a semana'] },
+  { label: 'Sábado',           syn: ['sabado', 'sabadao', 'fim de semana'] },
+  { label: 'Outra data',       syn: ['outra data', 'outro dia', 'outra'] }
 ];
 
 /** Nível recomendado por serviço, quando o cliente pede indicação. */

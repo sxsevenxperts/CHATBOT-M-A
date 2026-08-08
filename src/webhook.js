@@ -1,4 +1,5 @@
 import { handleMessage } from './flow.js';
+import { info, warn, falha } from './recorder.js';
 
 /**
  * Recebe os webhooks MESSAGES_UPSERT da Evolution API v2.
@@ -72,10 +73,7 @@ export function setupWebhook(app) {
 
     inflight++;
     processar(req.body)
-      .catch(err => {
-        console.error('[webhook] erro ao processar:', err?.message || err);
-        if (err?.response?.data) console.error('[webhook] detalhe:', err.response.data);
-      })
+      .catch(err => falha('webhook.erro', err))
       .finally(() => { inflight--; });
   });
 
@@ -85,7 +83,7 @@ export function setupWebhook(app) {
       const event = String(body.event || '').toLowerCase();
 
       if (event && !event.startsWith('messages.upsert')) {
-        console.log(`[webhook] ignorado: evento ${event}`);
+        info('webhook.ignorado', { motivo: 'outro evento', evento: event });
         return;
       }
 
@@ -97,19 +95,19 @@ export function setupWebhook(app) {
         const remoteJid = key.remoteJid || '';
 
         if (key.fromMe) {
-          console.log('[webhook] ignorado: mensagem própria (fromMe)');
+          info('webhook.ignorado', { motivo: 'fromMe (anti-loop)' });
           continue;
         }
         if (!remoteJid || remoteJid.endsWith('@g.us')) {
-          console.log('[webhook] ignorado: grupo');
+          info('webhook.ignorado', { motivo: 'grupo' });
           continue;
         }
         if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@broadcast')) {
-          console.log('[webhook] ignorado: status/broadcast');
+          info('webhook.ignorado', { motivo: 'status/broadcast' });
           continue;
         }
         if (rememberId(key.id)) {
-          console.log(`[webhook] ignorado: evento repetido ${key.id}`);
+          info('webhook.ignorado', { motivo: 'reentrega', id: key.id });
           continue;
         }
 
@@ -117,7 +115,7 @@ export function setupWebhook(app) {
         const text = extractText(item.message);
         const pushName = item.pushName || '';
 
-        console.log(`[webhook] ← ${phone} (${pushName || 'sem nome'}): ${text || '[sem texto]'}`);
+        info('webhook.recebido', { de: phone, perfil: pushName || '—', texto: text || '[sem texto]' });
 
         // Sequencial de propósito: duas mensagens do mesmo cliente no mesmo
         // lote precisam avançar o fluxo em ordem.
@@ -131,7 +129,7 @@ export function setupWebhook(app) {
     res.json({ ok: true, hint: 'endpoint ativo; a Evolution API deve usar POST aqui' })
   );
 
-  console.log(`[webhook] rota registrada: POST ${WEBHOOK_PATH}`);
+  info('webhook.rota', { path: WEBHOOK_PATH });
 }
 
 export { WEBHOOK_PATH };
