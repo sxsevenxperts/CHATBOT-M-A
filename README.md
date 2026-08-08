@@ -9,33 +9,49 @@ um atendente humano, notificando a equipe no dashboard.
 
 ## Como o atendimento funciona
 
+Seis etapas, com **árvore de decisão dinâmica**: o bot pergunta apenas o que
+ainda não sabe.
+
 ```
-Cliente manda mensagem
-        │
-        ▼
-1 · Boas-vindas + "Sobre o que deseja falar?"      (Agendar / Valores / Outro)
-        │
-        ▼
-2 · "Qual é o seu veículo?"
-        │
-        ▼
-3 · Grava a solicitação  ──►  🔔 notificação no dashboard (som + badge)
-    Pede que aguarde      ──►  bot silencia; quem responde é o atendente
-        │
-        ▼
-Bot volta a atender esse número 24h depois do último contato
+1 · Boas-vindas + nome
+2 · Veículo — categoria e modelo
+3 · Necessidade — serviço, ou "ainda não sei" → o bot recomenda
+4 · Nível — Essencial / Completa / Premium, ou o bot indica
+5 · Agendamento — período e data
+6 · Transferência para a atendente, com o contexto pronto
 ```
 
-Detalhes que importam:
+### A regra central
 
-- **O nome não é perguntado** — vem do perfil do WhatsApp (`pushName`).
-- **Fora do horário** o cliente é avisado quando a equipe retorna, e a
-  solicitação é registrada de qualquer forma.
-- **A janela de 24h conta do último contato.** Enquanto o cliente escreve, ela é
-  empurrada para frente — o bot nunca interrompe uma conversa com o atendente.
+**Nunca perguntar de novo o que o cliente já disse.** Cada mensagem passa por um
+extrator de contexto; o que ele reconhece preenche o registro e a pergunta
+correspondente simplesmente não acontece.
+
+Quem escreve, de primeira:
+
+> Meu nome é Sérgio, tenho uma Hilux e quero lavagem completa sábado
+
+recebe **uma única pergunta** — o período. O bot já extraiu nome, categoria
+(`Hilux → Picape`), veículo, serviço (`Lavagem`), nível (`Completa`) e data
+(`Sábado`). São 9 perguntas viram 1.
+
+O extrator reconhece: nome em frases de apresentação, ~90 modelos populares e a
+categoria que cada um implica, serviços, níveis, períodos e datas
+(`hoje`, `amanhã`, dias da semana, `dia 14`, `12/09`).
+
+### Outros comportamentos
+
+- **O nome é perguntado**, não deduzido do perfil — `pushName` vai para a
+  atendente como pista, mas não é usado para tratar o cliente.
+- **Nunca informa preço.** Quem pergunta valores é registrado e encaminhado.
+- **Dúvida solta** não passa por veículo nem agenda: vai direto ao humano.
+- **Fora do horário** avisa quando a equipe retorna e registra de todo jeito.
+- **Delay de 3–5s** antes de cada resposta, com `"digitando…"`.
+- **Rearme 24h após o último contato.** Cada mensagem empurra a janela, então o
+  bot nunca interrompe a conversa com a atendente.
 - **Grupos, status e as próprias mensagens do bot são ignorados.**
-- **Reentrega do mesmo evento é descartada** — o cliente não recebe a pergunta
-  duas vezes.
+- **Reentrega do mesmo evento é descartada** por id.
+- **Sessões no Supabase:** o handoff sobrevive a redeploy.
 
 Horário: Seg–Sex 7h–18h · Sáb 7h–14h · Dom fechado (fuso `America/Fortaleza`).
 
@@ -45,10 +61,14 @@ Horário: Seg–Sex 7h–18h · Sáb 7h–14h · Dom fechado (fuso `America/Fort
 
 `https://SEU-DOMINIO/admin` — protegido por senha (`ADMIN_PASSWORD`).
 
+Identidade visual derivada da logomarca: vermelho `#C61C29` (extraído da própria
+arte), grafite quente e serifada nos títulos.
+
 | Recurso | O que faz |
 |---|---|
 | Notificação | Som, notificação do navegador, badge e destaque na linha a cada nova solicitação |
-| Solicitações | Cliente, assunto, veículo, quando chegou, situação |
+| Solicitações | Cliente, veículo, serviço, nível, preferência, quando chegou, situação |
+| Cartão de contexto | Clique na linha: o bloco completo que a atendente precisa, com **Copiar contexto** e a próxima ação sugerida |
 | Situação | Aguardando → Em atendimento → Concluída / Descartada |
 | Abrir chat | Vai direto para a conversa no WhatsApp |
 | Reativar bot | Devolve um número à triagem automática antes das 24h |
@@ -122,10 +142,11 @@ bot responder a si mesmo em **loop infinito**. Cada falha vem com o conserto.
 npm test
 ```
 
-36 verificações end-to-end: fluxo completo, anti-loop, grupos, idempotência,
-handoff, regra das 24h, autenticação do dashboard. Sobe uma Evolution **falsa** —
-nenhuma mensagem real é enviada — usa o Supabase de verdade e limpa os dados no
-final.
+93 verificações end-to-end: as 6 etapas, a extração de contexto, recomendação
+de serviço e nível, dúvida solta, anti-loop, grupos, idempotência, handoff,
+regra das 24h, delay, autenticação e assets do dashboard. Sobe uma Evolution
+**falsa** — nenhuma mensagem real é enviada — usa o Supabase de verdade e limpa
+os dados no final.
 
 ---
 
@@ -136,11 +157,14 @@ src/
   index.js      orquestração, portas, auto-sync do webhook no boot
   evolution.js  cliente da Evolution API v2 (normaliza a base URL, sendText)
   webhook.js    parsing do MESSAGES_UPSERT + filtros (fromMe, grupo, duplicado)
-  flow.js       máquina de estados da triagem e regra das 24h
+  flow.js       as 6 etapas, árvore dinâmica e regra das 24h
+  catalog.js    serviços, níveis, categorias e modelos por categoria
+  extract.js    extração de contexto do texto livre (a regra central)
   database.js   Supabase: triagens, sessões, mensagens
   admin.js      rotas do dashboard (/admin)
 public/
   admin.html    dashboard (autocontido, sem CDN)
+  logo.png      logomarca sem fundo · mark.png, favicon.png, apple-touch-icon.png
 scripts/
   doctor.js     diagnóstico
   e2e.js        testes
@@ -166,3 +190,4 @@ Rotas do dashboard exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `POST` | `/admin/api/sessions/:phone/reactivate` | Devolve o número ao bot |
 | `GET` | `/admin/api/messages` | Fluxo de mensagens |
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
+| `GET` | `/admin/api/build` | Selo do build (detecta aba desatualizada) |

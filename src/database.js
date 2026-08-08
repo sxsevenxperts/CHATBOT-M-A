@@ -86,14 +86,35 @@ export async function keepalive() {
 
 /* ---------------- Triagens ---------------- */
 
+const INTENT_LABELS = {
+  lavar: 'Lavagem', estetica: 'Estética / detalhamento', agendar: 'Agendamento',
+  valores: 'Consultar valores', duvida: 'Dúvida'
+};
+
 export async function saveTriage(t) {
+  // `subject` é o resumo de uma linha usado na lista do dashboard.
+  const subject = t.service || INTENT_LABELS[t.intent] || t.subject || 'Atendimento';
+
+  const notas = [];
+  if (t.has_question) notas.push('Cliente tem uma dúvida antes de fechar');
+  if (t.profile_name && t.profile_name !== t.name) notas.push(`Perfil do WhatsApp: ${t.profile_name}`);
+  if (t.note) notas.push(t.note);
+
   const { data, error } = await db().from('triages').insert([{
     phone: t.phone,
     name: t.name || 'Cliente',
-    subject: t.subject || null,
+    subject,
+    intent: t.intent || null,
+    category: t.category || null,
     vehicle: t.vehicle || null,
-    note: t.note || null,
-    is_customer: !!t.is_customer,
+    service: t.service || null,
+    need: t.need || null,
+    level: t.level || null,
+    period: t.period || null,
+    date_pref: t.date_pref || null,
+    recommended: !!t.recommended,
+    origin: 'chatbot',
+    note: notas.length ? notas.join(' · ') : null,
     status: 'pending',
     seen: false
   }]).select();
