@@ -254,7 +254,7 @@ vem com o conserto.
 npm test
 ```
 
-**166 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**178 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -308,13 +308,37 @@ O que existe é redução de risco e recuperação rápida:
 | Reconexão automática | Queda transitória volta sozinha, sem ninguém olhar |
 | Alarme com QR no dashboard | Quando precisa de QR, ele aparece no próprio alerta com o passo a passo |
 | Botões Conectar / Reiniciar | Religar pelo dashboard, sem abrir o Evolution Manager |
+| Painel da conexão oficial | Migrar para a Cloud API da Meta pelo próprio dashboard |
 | **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
 | `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
 
-**A única forma de ter conexão que não depende de sessão de aparelho é a API
-oficial do WhatsApp (Cloud API, pela Meta).** É paga por conversa, exige
-verificação da empresa e não usa QR Code. Enquanto o canal for Baileys, o
-realista é: cai raramente, o sistema avisa na hora e volta em segundos.
+### A API oficial resolve — mas tem uma consequência que decide tudo
+
+O dashboard tem o painel **Conexão oficial · API do WhatsApp (Meta)** para
+configurar a Cloud API: nome da instância, número, WABA/Business ID e token. O
+token vai direto para a Evolution, não é gravado aqui nem aparece em log.
+
+**Só que um número registrado na Cloud API sai do aplicativo do WhatsApp.**
+Não é possível usar o mesmo número na Cloud API e no app (nem no WhatsApp
+Business) ao mesmo tempo. Ao registrar:
+
+- o número **deixa de funcionar no celular**;
+- o histórico do app **não migra**;
+- todo atendimento humano passa a acontecer por uma caixa de entrada web
+  (Meta Business Suite, Chatwoot, ou este dashboard com envio implementado).
+
+Como o requisito é **atendente assumindo no mesmo número**, isso importa:
+
+| Caminho | O bot não cai | Atendente responde pelo celular | Custo |
+|---|---|---|---|
+| Baileys no número atual (hoje) | cai raro, avisa e religa | **sim** | grátis |
+| Cloud API no número atual | **não cai** | **não** — só por inbox web | por conversa |
+| Cloud API em número novo, app no atual | **não cai** | sim, no número pessoal | por conversa |
+
+O terceiro é o único que tem as duas coisas — exige um segundo número.
+
+Enquanto o canal for Baileys, o realista é: cai raramente, o sistema avisa na
+hora, religa sozinho e o QR está a um clique no dashboard.
 
 ---
 
@@ -401,6 +425,7 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
+| `POST` | `/admin/api/whatsapp/oficial` | Cria conexão pela Cloud API da Meta |
 | `GET` | `/admin/api/build` | Selo do build |
 
 `de` e `ate` são datas `YYYY-MM-DD` **no fuso da loja** (`TIMEZONE`); `ate`

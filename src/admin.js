@@ -12,7 +12,7 @@ import {
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
-  reconnect, restartInstance
+  reconnect, restartInstance, criarInstanciaOficial
 } from './evolution.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 
@@ -196,6 +196,35 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     const r = await reconnect();
     info('admin.whatsappConectar', { precisaQr: r.precisaQr });
     res.json({ ok: true, ...r });
+  }));
+
+  /**
+   * Conecta pela API oficial da Meta (Cloud API).
+   *
+   * O token do cliente vai direto para a Evolution — não é gravado no nosso
+   * banco nem aparece em log. A caixa preta registra só que a conexão foi
+   * criada e para qual número.
+   */
+  api.post('/whatsapp/oficial', wrap(async (req, res) => {
+    const { instanceName, number, token, businessId } = req.body || {};
+    const faltando = Object.entries({ instanceName, number, token, businessId })
+      .filter(([, v]) => !String(v || '').trim()).map(([k]) => k);
+    if (faltando.length) {
+      return res.status(400).json({ error: `Preencha: ${faltando.join(', ')}` });
+    }
+
+    const resultado = await criarInstanciaOficial({ instanceName, number, token, businessId });
+    info('admin.conexaoOficialCriada', {
+      instancia: instanceName,
+      numero: String(number).replace(/\D/g, '').slice(0, 6) + '…',
+      businessId: String(businessId).slice(0, 6) + '…'
+    });
+    res.json({
+      ok: true,
+      instancia: instanceName,
+      proximoPasso: `Troque EVOLUTION_INSTANCE para "${instanceName}" nas variáveis do EasyPanel e faça redeploy.`,
+      resultado
+    });
   }));
 
   /** Reinicia a instância, para estado travado. */
