@@ -80,6 +80,7 @@ const app = spawn(process.execPath, ['src/index.js'], {
     REPLY_DELAY_MIN_MS: '250', REPLY_DELAY_MAX_MS: '350',
     KEEPALIVE_HOURS: '0', REARM_HOURS: '24', MONITOR_SECONDS: '1',
     RECOVERY_MIN_MINUTES: '0', RECOVERY_MAX: '5',
+    SONDA_TIMEOUT_MS: '3000',
     TEST_PHONES: [A, B, C, '5588000000094'].join(','),
     NODE_ENV: 'test'
   },
@@ -878,6 +879,101 @@ try {
       ? ok('caixa preta registra os ACKs') : no('ACK não registrado na caixa preta');
 
     for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', E);
+  }
+
+  /* ---------- 12h · Freio de envio: recusa em série para o bot ---------- */
+  head('12h · Freio de envio (parar de insistir quando o WhatsApp recusa)');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token }, method: 'POST' };
+    const authGet = { headers: { Authorization: 'Bearer ' + token } };
+    const F = '5588000000812';
+    const freio = async () => (await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/freio`, authGet)).json());
+    const liberar = () => fetch(`http://localhost:${APP_PORT}/admin/api/envio/liberar`, auth);
+
+    await liberar();
+    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', F);
+    (await freio()).bloqueado === false ? ok('começa com o envio liberado') : no('freio já engatado antes do teste');
+
+    // Três recusas seguidas: o limite de fábrica.
+    let engatou = false;
+    for (let i = 0; i < 3; i++) {
+      const antes = sent.length;
+      await diz(i === 0 ? 'oi' : 'Sérgio', { de: F });
+      const m = sent.slice(antes).find(x => x.number === F);
+      if (!m?.waId) break;
+      await ack(m.waId, 'ERROR');
+      engatou = (await freio()).bloqueado;
+      if (engatou) break;
+    }
+    engatou ? ok('3 recusas seguidas engatam o freio') : no('freio não engatou com recusas em série');
+
+    const f1 = await freio();
+    f1.motivo ? ok(`freio registra o motivo (${String(f1.motivo).slice(0, 40)}…)`) : no('freio sem motivo');
+    f1.desde ? ok('freio registra desde quando') : no('freio sem horário');
+
+    // Com o freio engatado o bot NÃO pode enviar mais nada.
+    const antesBloq = sent.length;
+    await diz('e agora?', { de: F });
+    sent.length === antesBloq ? ok('com o freio engatado o bot não envia') : no('bot enviou com o freio engatado');
+
+    const { data: bloq } = await sb.from('messages').select('status,body')
+      .eq('phone', F).eq('direction','out').eq('status','BLOQUEADO').limit(1);
+    bloq?.length ? ok('a resposta que não saiu fica registrada como BLOQUEADO') : no('resposta bloqueada não registrada');
+
+    const ent = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, authGet)).json();
+    typeof ent.naoEnviadas === 'number' ? ok(`resumo separa as não enviadas (${ent.naoEnviadas})`) : no('resumo não separa BLOQUEADO');
+    ent.freio?.bloqueado === true ? ok('resumo de entrega expõe o freio') : no('resumo sem o freio');
+
+    const saude = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+    saude.freio?.bloqueado === true ? ok('/health expõe o freio engatado') : no('/health sem o freio');
+
+    const logF = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, authGet)).json();
+    const nomes = new Set((logF.eventos || []).map(e => e.event));
+    nomes.has('freio.engatado') ? ok('caixa preta registra o freio engatando') : no('freio ausente da caixa preta');
+    nomes.has('freio.naoEnviou') ? ok('caixa preta registra a resposta que não saiu') : no('não registra a resposta engolida');
+
+    // Entrega confirmada solta o freio: é a única prova de que o canal voltou.
+    await liberar();
+    (await freio()).bloqueado === false ? ok('liberação manual religa o envio') : no('liberação manual não funcionou');
+
+    const antesVolta = sent.length;
+    await diz('voltei', { de: F });
+    sent.length > antesVolta ? ok('depois de liberado o bot volta a responder') : no('bot continua mudo após liberar');
+
+    await fetch(`http://localhost:${APP_PORT}/admin/api/envio/bloquear`, {
+      ...auth, headers: { ...auth.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ motivo: 'teste' })
+    });
+    (await freio()).bloqueado === true ? ok('bloqueio manual disponível') : no('bloqueio manual não funcionou');
+
+    const ultima = sent.slice(antesVolta).find(x => x.number === F);
+    if (ultima?.waId) {
+      await ack(ultima.waId, 'DELIVERY_ACK');
+      (await freio()).bloqueado === false ? ok('entrega confirmada solta o freio sozinha') : no('entrega não soltou o freio');
+    }
+
+    const pag = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    pag.includes('Testar envio') ? ok('dashboard tem o teste de envio') : no('teste de envio ausente');
+    pag.includes('Liberar envio') ? ok('dashboard tem a liberação do envio') : no('liberação ausente');
+    pag.includes('ENVIO BLOQUEADO') ? ok('dashboard mostra o envio bloqueado') : no('aviso de bloqueio ausente');
+    pag.includes('freio de segurança') ? ok('rótulo da mensagem não enviada na página') : no('rótulo ausente');
+
+    // Sonda: um envio só, com espera do ACK real.
+    const sonda = await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/sonda`, {
+      ...auth, headers: { ...auth.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ numero: F, texto: 'sonda de teste' })
+    })).json();
+    sonda.waId ? ok('sonda envia e devolve o id') : no('sonda não enviou');
+    'veredito' in sonda ? ok('sonda dá veredito em português') : no('sonda sem veredito');
+
+    const ruim = await fetch(`http://localhost:${APP_PORT}/admin/api/envio/sonda`, {
+      ...auth, headers: { ...auth.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ numero: '123' })
+    });
+    ruim.status === 400 ? ok('sonda recusa número inválido') : no(`sonda aceitou número inválido (${ruim.status})`);
+
+    await liberar();
+    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', F);
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

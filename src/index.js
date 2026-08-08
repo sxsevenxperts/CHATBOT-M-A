@@ -10,6 +10,7 @@ import { retomarConversas } from './flow.js';
 import { setupAdmin } from './admin.js';
 import { checkConnection, getWebhook, setWebhook, getConfig, reconnect } from './evolution.js';
 import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
+import { bloquear as engatarFreio, ver as verFreio } from './freio.js';
 import { setProprioNumero } from './testflag.js';
 
 const PORT = num('PORT', 3000);
@@ -228,6 +229,14 @@ function startConnectionMonitor() {
       const antes = state.entrega.saudavel;
       state.entrega = { ...r, checadoEm: new Date().toISOString() };
 
+      // Segunda camada do freio: se algum ACK de recusa se perdeu no caminho,
+      // o resumo do banco ainda enxerga a rejeição e para o envio.
+      // Na suíte, quem engata o freio é o ACK (determinístico) — senão este
+      // relógio de 60s engataria no meio de outra seção e a deixaria instável.
+      if (r.rejeitadas > 0 && !verFreio().bloqueado && process.env.NODE_ENV !== 'test') {
+        engatarFreio(`${r.rejeitadas} mensagens recusadas pelo WhatsApp nos últimos ${r.minutos} min`);
+      }
+
       if (r.saudavel === false && antes !== false) {
         const rejeitou = r.rejeitadas > 0;
         falha('entrega.falhando',
@@ -237,7 +246,7 @@ function startConnectionMonitor() {
           {
             enviadas: r.enviadas, entregues: r.entregues, rejeitadas: r.rejeitadas,
             acao: rejeitou
-              ? 'o WhatsApp está recusando os envios: verifique se o número tem restrição no aparelho antes de repareaar'
+              ? 'o WhatsApp está recusando os envios: freio engatado, atenda manualmente. Repareaar NÃO resolve (testado em 08/08/2026) — use "Testar envio" antes de religar'
               : 'a Evolution aceita mas o WhatsApp não entrega — use "Desconectar e pareear"'
           });
       } else if (r.saudavel === true && antes === false) {
@@ -303,6 +312,7 @@ function buildApp() {
     inflight: getInflight(),
     filasPorTelefone: filasAbertas(),
     entrega: state.entrega,
+    freio: verFreio(),
     config: {
       rearmeHoras: num('REARM_HOURS', 24),
       delayMs: [num('REPLY_DELAY_MIN_MS', 3000), num('REPLY_DELAY_MAX_MS', 5000)],

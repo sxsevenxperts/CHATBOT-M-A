@@ -122,6 +122,15 @@ export async function atualizarStatusMensagem(waId, status) {
   return (data || []).length > 0;
 }
 
+/** Status atual de uma mensagem pelo id do WhatsApp — usado pela sonda. */
+export async function statusPorWaId(waId) {
+  if (!waId) return null;
+  const { data, error } = await db().from('messages')
+    .select('status, status_at').eq('wa_id', waId).limit(1);
+  if (error) { warn('db.statusPorWaIdFalhou', { erro: error.message }); return null; }
+  return (data || [])[0] || null;
+}
+
 /**
  * As mensagens que saíram estão realmente CHEGANDO?
  *
@@ -145,7 +154,11 @@ export async function resumoEntrega({ minutos = 30 } = {}) {
     .gte('created_at', desde);
   if (error) throw error;
 
-  const todas = data || [];
+  // BLOQUEADO nunca chegou a sair (freio de envio). Contar como "enviada sem
+  // confirmação" faria o alarme apontar para o WhatsApp quando a causa é o
+  // próprio freio — que já tem alarme próprio.
+  const todas = (data || []).filter(m => m.status !== 'BLOQUEADO');
+  const naoEnviadas = (data || []).length - todas.length;
   const antigas = todas.filter(m => m.created_at < maduro);
   const entregues = todas.filter(m => ENTREGUES.includes(m.status)).length;
   const rejeitadas = todas.filter(m => REJEITADAS.includes(m.status)).length;
@@ -156,6 +169,7 @@ export async function resumoEntrega({ minutos = 30 } = {}) {
     enviadas: todas.length,
     entregues,
     rejeitadas,
+    naoEnviadas,
     noServidor: todas.filter(m => m.status === 'SERVER_ACK').length,
     semConfirmacao: semAck,
     // null = sem dado suficiente para julgar. false = não está chegando.

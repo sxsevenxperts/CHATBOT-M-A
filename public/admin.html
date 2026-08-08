@@ -482,6 +482,19 @@
 
   <div class="panel">
     <div class="panel-head">
+      <h2 class="serif">Envio de mensagens</h2>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">
+        <input id="sondaNum" placeholder="número com DDD" inputmode="numeric"
+               style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:170px">
+        <button class="btn btn-sm btn-primary" id="btnSonda" title="Envia UMA mensagem e espera a confirmação real de entrega">Testar envio</button>
+        <button class="btn btn-sm" id="btnLiberar" title="Religa o envio automático — só depois de um teste entregue">Liberar envio</button>
+      </div>
+    </div>
+    <div class="panel-body" id="freio"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
       <h2 class="serif">Estabilidade da conexão</h2>
       <div class="chips" id="chipsDias" style="margin-left:auto">
         <button class="chip" data-dias="1">24h</button>
@@ -927,7 +940,8 @@ function renderFeed(list) {
     d.className = 'msg ' + (m.direction === 'in' ? 'in' : 'out');
     const lb = document.createElement('span'); lb.className = 'label';
     const ENT = { PENDING:'⏳ enviando', SERVER_ACK:'✓ no servidor', DELIVERY_ACK:'✓✓ entregue',
-                  READ:'✓✓ lida', PLAYED:'✓✓ ouvida', ERROR:'✖ REJEITADA pelo WhatsApp' };
+                  READ:'✓✓ lida', PLAYED:'✓✓ ouvida', ERROR:'✖ REJEITADA pelo WhatsApp',
+                  BLOQUEADO:'⛔ NÃO ENVIADA — freio de segurança' };
     const st = m.direction === 'out'
       ? ' · ' + (ENT[m.status] || (m.status ? m.status : '⏳ sem confirmação'))
       : '';
@@ -1083,6 +1097,9 @@ function renderStatus(s) {
     : ent.saudavel === false
       ? (ent.rejeitadas ? ` ${ent.rejeitadas} REJEITADAS` : ' Entrega FALHANDO')
       : ' Entrega sem dados';
+
+  // Freio de envio: o bot parou de responder de propósito.
+  pintarFreio(s.freio || {});
 
   // Alarme: mensagens aceitas e não entregues é falha silenciosa — a pior.
   if (ent.saudavel === false && banner.dataset.reason !== 'whatsapp') {
@@ -1267,6 +1284,55 @@ $('#btnSync').onclick = async () => {
   const r = await api('/webhook/sync', { method:'POST' });
   const j = await r.json();
   toast(r.ok ? 'Webhook sincronizado' : 'Falha', r.ok ? j.url : (j.error || 'Não foi possível sincronizar'));
+  refresh();
+};
+
+/* ---------------- Freio de envio ---------------- */
+
+function pintarFreio(f) {
+  const el = $('#freio');
+  if (!el) return;
+  const on = !!f.bloqueado;
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      `<span class="pill"><i class="dot ${on ? 'off' : 'on'}"></i> ` +
+      (on ? 'ENVIO BLOQUEADO' : 'Envio liberado') + '</span>' +
+      (f.rejeicoesSeguidas ? `<span class="label">${f.rejeicoesSeguidas} recusa(s) seguidas de ${f.limite}</span>` : '') +
+      (f.naoEnviadas ? `<span class="label">${f.naoEnviadas} resposta(s) não enviada(s)</span>` : '') +
+    '</div>' +
+    (on
+      ? '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
+        `<strong>Motivo:</strong> ${(f.motivo || 'recusa do WhatsApp')}<br>` +
+        'O bot parou de responder de propósito: o WhatsApp está recusando os envios e insistir agrava o número. ' +
+        '<strong>Atenda manualmente pelo WhatsApp</strong> enquanto isso. ' +
+        'Use <em>Testar envio</em>; se a mensagem for entregue, o freio sai sozinho.</p>'
+      : '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
+        'O bot responde normalmente. Se o WhatsApp recusar ' + (f.limite || 3) +
+        ' envios seguidos, o envio para sozinho e a equipe é avisada aqui.</p>') +
+    (f.ultimaEntrega ? `<p style="font-size:12px;color:var(--faint);margin-top:6px">Última entrega confirmada: ${new Date(f.ultimaEntrega).toLocaleString('pt-BR')}</p>` : '') +
+    (f.ultimaRejeicao ? `<p style="font-size:12px;color:var(--faint)">Última recusa: ${new Date(f.ultimaRejeicao).toLocaleString('pt-BR')}</p>` : '');
+}
+
+$('#btnSonda').onclick = async () => {
+  const numero = ($('#sondaNum').value || '').replace(/\D/g, '');
+  if (numero.length < 10) return toast('Número inválido', 'Informe com DDD, ex.: 88981553041');
+  const b = $('#btnSonda');
+  b.disabled = true; b.textContent = 'Testando…';
+  try {
+    const r = await api('/envio/sonda', { method: 'POST', body: JSON.stringify({ numero }) });
+    const j = await r.json();
+    toast(j.entregue ? 'Entregue' : j.rejeitada ? 'REJEITADA' : 'Sem confirmação', j.veredito || j.error || '');
+    refresh();
+  } finally {
+    b.disabled = false; b.textContent = 'Testar envio';
+  }
+};
+
+$('#btnLiberar').onclick = async () => {
+  if (!confirm('Religar o envio automático?\n\nFaça isto só depois de um "Testar envio" entregue. ' +
+               'Religar com o WhatsApp recusando piora a restrição do número.')) return;
+  const r = await api('/envio/liberar', { method: 'POST' });
+  toast(r.ok ? 'Envio liberado' : 'Falha', r.ok ? 'O bot volta a responder.' : 'Não foi possível.');
   refresh();
 };
 

@@ -371,6 +371,33 @@ repareaar resolve. `ERROR` é recusa: repareamento repetido tende a piorar. Ness
 caso, primeiro verifique no aparelho se o número tem aviso de restrição, e teste
 enviar uma mensagem **manualmente** — se a manual também falhar, é a conta.
 
+### O freio de envio
+
+Descoberto em 08/08/2026, depois de instrumentar a entrega: **todo** envio deste
+número passou a voltar `ERROR` — para qualquer destinatário, para o `@lid` do
+contato, e até para o próprio número. E o bot continuou respondendo por horas.
+Duas coisas pioravam ao mesmo tempo: cada tentativa recusada reforçava o padrão
+de automação no número, e o cliente ficava sem resposta sem ninguém saber.
+
+Agora o app tem um **freio**: `FREIO_REJEICOES` recusas seguidas (padrão 3) e o
+envio para sozinho.
+
+- a resposta que deixaria de sair é gravada com status `BLOQUEADO` e aparece no
+  fluxo como **⛔ NÃO ENVIADA — freio de segurança**;
+- o painel **Envio de mensagens** fica vermelho com o motivo e a hora;
+- a caixa preta grava `freio.engatado` e `freio.naoEnviou`;
+- o atendimento continua **manual, no mesmo WhatsApp** — a triagem já gravada
+  fica no dashboard com o contexto que o bot conseguiu extrair.
+
+O freio **não** religa sozinho por tempo. Só sai de duas formas:
+
+1. **Testar envio** no painel — manda *uma* mensagem e espera o ACK real. Se for
+   entregue, o freio sai automaticamente;
+2. **Liberar envio** — decisão manual de quem opera.
+
+Isso é deliberado: religar por conta própria e voltar a insistir foi exatamente
+o comportamento que agravou o problema.
+
 Se nada dos últimos 30 min chegar a `DELIVERY_ACK`, o dashboard levanta alarme
 vermelho e a caixa preta grava `entrega.falhando`. **A falha silenciosa deixou
 de ser silenciosa** — é o que permite afirmar que o bot funciona em vez de supor.
@@ -395,6 +422,30 @@ Ordem para tentar, do menos ao mais invasivo:
 1. **Conectar / Gerar QR** — queda comum, religa
 2. **Reiniciar instância** — estado travado
 3. **Desconectar e pareear** — aceita o envio mas não entrega
+
+### Recusa em série não é problema de sessão — o que os dados mostraram
+
+Em 08/08/2026, com o rastreio de entrega já no ar, o quadro foi este:
+
+| Evidência | Leitura |
+|---|---|
+| `state: open`, `ownerJid` correto | a sessão está autenticada |
+| consulta de número devolve nome do contato | o socket funciona e é autorizado |
+| mensagens **recebidas** chegam normalmente | o canal de entrada está de pé |
+| **todo** envio volta `ERROR` — contato, `@lid` e o próprio número | não é endereçamento, não é destinatário |
+| a mesma imagem `v2.3.7` entregava 17 h antes, na conversa em que o cliente respondeu cada pergunta | não é a build nem o código |
+| **pareamento novo no mesmo dia não resolveu** | não é estado de sessão |
+| nenhum aviso da Meta no aparelho | não é banimento comunicado |
+
+Conclusão: o que mudou está do lado da **conta/dispositivo no WhatsApp**, não
+aqui. Restrição de envio em dispositivo conectado não vem com aviso — o
+aplicativo continua normal e as consultas continuam funcionando; só o relay das
+mensagens do dispositivo é recusado.
+
+O que **não** fazer nesse estado: repareaar de novo, reiniciar em série, trocar a
+imagem. Já foi tentado e só piora. O que fazer: **atender manualmente**, deixar o
+número quieto (o freio faz isso sozinho) e testar o envio pelo dashboard antes de
+religar. Se a recusa persistir, o caminho durável é a Cloud API — seção abaixo.
 
 ### A API oficial resolve — mas tem uma consequência que decide tudo
 
@@ -467,6 +518,7 @@ src/
   admin.js      rotas do dashboard
   recorder.js   caixa preta
   serial.js     fila por telefone (evita corrida na mesma conversa)
+  freio.js      freio de envio: para de enviar quando o WhatsApp recusa
   testflag.js   decide o que é conversa de teste
   env.js        carrega o .env antes dos outros módulos
 public/
@@ -507,7 +559,11 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/stats` | Números do topo — mesmos filtros |
 | `GET` | `/admin/api/log` | Caixa preta em memória (`?level=error`) |
 | `GET` | `/admin/api/conexao/historico` | Quedas persistidas (`?dias=7`) |
-| `GET` | `/admin/api/entrega` | Confirmações de entrega (`?minutos=30`) |
+| `GET` | `/admin/api/entrega` | Confirmações de entrega (`?minutos=30`) + freio |
+| `GET` | `/admin/api/envio/freio` | Estado do freio de envio |
+| `POST` | `/admin/api/envio/sonda` | Envia **uma** mensagem e espera o ACK (`{numero}`) |
+| `POST` | `/admin/api/envio/liberar` | Religa o envio automático |
+| `POST` | `/admin/api/envio/bloquear` | Para o envio manualmente (`{motivo}`) |
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
@@ -550,3 +606,5 @@ verificação — não reintroduza.
 | Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE`. O ACK real era `ERROR` |
 | Auto-correção do webhook só olhando a URL | `MESSAGES_UPDATE` nunca era adicionado: a URL estava certa e o boot retornava antes | Precisa comparar a **lista de eventos** também |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |
+| Continuar enviando depois de `ERROR` | O bot "conversou" horas sozinho e cada tentativa piorava o número | Recusa em série tem de **parar o envio** — é o freio |
+| Concluir banimento por causa da recusa | Diagnóstico errado apresentado ao cliente | Restrição de envio em dispositivo conectado **não** vem com aviso da Meta; ausência de aviso não prova nada nos dois sentidos |

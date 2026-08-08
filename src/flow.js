@@ -13,6 +13,7 @@ import {
   extractAll, matchOption, nameFromAnswer, extractVehicle,
   extractDate, extractPeriod, norm
 } from './extract.js';
+import { bloqueado as envioBloqueado, contarNaoEnviada } from './freio.js';
 import { info, warn } from './recorder.js';
 
 /**
@@ -147,6 +148,16 @@ function apelidoVeiculo(v) {
 }
 
 async function reply(phone, text) {
+  // Freio engatado: o WhatsApp está recusando. Enviar de novo só piora o
+  // número e o cliente continua sem ver nada. Registra o que deixou de sair
+  // (fica visível no dashboard) e devolve o caso para o atendimento humano.
+  if (envioBloqueado()) {
+    await logMessage(phone, 'out', text, null, 'BLOQUEADO');
+    const n = contarNaoEnviada();
+    warn('freio.naoEnviou', { phone, naoEnviadas: n });
+    return { enviado: false };
+  }
+
   const min = DELAY_MIN(), max = DELAY_MAX();
   const wait = min + Math.random() * Math.max(0, max - min);
   if (wait > 0) {
@@ -156,6 +167,7 @@ async function reply(phone, text) {
   // Guarda o id do WhatsApp: é por ele que o ACK de entrega volta.
   const r = await sendText(phone, text);
   await logMessage(phone, 'out', text, r?.waId || null, r?.status || null);
+  return { enviado: true, waId: r?.waId || null };
 }
 
 /* ---------------- Árvore dinâmica ---------------- */
