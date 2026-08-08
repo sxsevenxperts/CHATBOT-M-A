@@ -88,17 +88,32 @@ async function initDependencies() {
   }
 
   const expected = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+
+  // Os eventos importam tanto quanto a URL: sem MESSAGES_UPSERT o bot não
+  // recebe nada, e sem MESSAGES_UPDATE não há confirmação de entrega — foi
+  // assim que a produção ficou meses sem saber se as mensagens chegavam.
+  // Comparar só a URL fazia a auto-correção ignorar deriva de eventos.
+  const EVENTOS = ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'];
+
   try {
     const current = await getWebhook();
-    if (current?.enabled && current?.url === expected) {
-      state.webhook = { ok: true, error: null, url: expected };
-      info('boot.webhookOk', { url: expected });
+    const atuais = current?.events || [];
+    const faltando = EVENTOS.filter(e => !atuais.includes(e));
+
+    if (current?.enabled && current?.url === expected && !faltando.length) {
+      state.webhook = { ok: true, error: null, url: expected, eventos: atuais };
+      info('boot.webhookOk', { url: expected, eventos: atuais.join(',') });
       return;
     }
-    warn('boot.webhookDivergente', { atual: current?.url || '(nenhum)', esperado: expected });
+
+    warn('boot.webhookDivergente', {
+      atual: current?.url || '(nenhum)', esperado: expected,
+      eventosAtuais: atuais.join(',') || '(nenhum)',
+      faltando: faltando.join(',') || '—'
+    });
     await setWebhook(expected);
-    state.webhook = { ok: true, error: null, url: expected };
-    info('boot.webhookCorrigido', { url: expected, eventos: 'MESSAGES_UPSERT' });
+    state.webhook = { ok: true, error: null, url: expected, eventos: EVENTOS };
+    info('boot.webhookCorrigido', { url: expected, eventos: EVENTOS.join(',') });
   } catch (e) {
     state.webhook.error = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
     falha('boot.webhookFalhou', e);

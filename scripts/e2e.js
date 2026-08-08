@@ -48,11 +48,16 @@ mock.post('/message/sendText/:i', (q, r) => {
   console.log(`  \x1b[90m↗ ${q.body.number}: ${String(q.body.text).split('\n')[0].slice(0,64)}…\x1b[0m`);
   r.json({ key: { id: waId }, status: 'PENDING' });
 });
+// Começa SEM MESSAGES_UPDATE: o boot tem de perceber e corrigir.
+let webhookEventos = ['MESSAGES_UPSERT'];
 mock.get('/webhook/find/:i', (_q, r) => r.json({
   enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`,
-  events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE']
+  events: webhookEventos
 }));
-mock.post('/webhook/set/:i', (q, r) => r.json({ ...q.body.webhook }));
+mock.post('/webhook/set/:i', (q, r) => {
+  webhookEventos = q.body.webhook?.events || webhookEventos;
+  r.json({ ...q.body.webhook });
+});
 let restarts = 0;
 mock.get('/instance/connect/:i', (_q, r) => r.json(
   statusMock === 'open' ? { base64: null, pairingCode: null, code: null }
@@ -792,6 +797,19 @@ try {
     for (const t of ['messages','bot_sessions','triages']) {
       await sb.from(t).delete().in('phone', [P, Q]);
     }
+  }
+
+  /* ---------- 12f2 · Auto-correção dos eventos do webhook ---------- */
+  head('12f2 · Boot corrige eventos faltando no webhook');
+  {
+    // A produção ficou com só MESSAGES_UPSERT porque ensureWebhook comparava
+    // apenas a URL. Agora confere a lista de eventos também.
+    webhookEventos.includes('MESSAGES_UPDATE')
+      ? ok('boot adicionou MESSAGES_UPDATE sozinho') : no(`eventos após o boot: ${webhookEventos}`);
+    webhookEventos.includes('MESSAGES_UPSERT')
+      ? ok('MESSAGES_UPSERT preservado') : no('perdeu MESSAGES_UPSERT');
+    !webhookEventos.includes('SEND_MESSAGE')
+      ? ok('SEND_MESSAGE segue fora (evitaria loop infinito)') : no('SEND_MESSAGE entrou — causa loop');
   }
 
   /* ---------- 12g · Entrega: aceite não é entrega ---------- */

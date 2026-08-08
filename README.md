@@ -274,7 +274,7 @@ vem com o conserto.
 npm test
 ```
 
-**221 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**224 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -541,4 +541,5 @@ verificação — não reintroduza.
 | Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
 | Histórico de quedas só em memória | Impossível responder "quantas vezes caiu?" — o anel zera a cada deploy | Faltava persistir em `connection_events` |
 | Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE` |
+| Auto-correção do webhook só olhando a URL | `MESSAGES_UPDATE` nunca era adicionado: a URL estava certa e o boot retornava antes | Precisa comparar a **lista de eventos** também |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |
