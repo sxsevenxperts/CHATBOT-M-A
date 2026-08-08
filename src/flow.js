@@ -57,6 +57,32 @@ const ASSINATURA =
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/** Passos válidos desta versão do fluxo. */
+const PASSOS = new Set([
+  'ask_name', 'ask_intent', 'ask_category', 'ask_model',
+  'ask_service', 'ask_need', 'ask_level', 'ask_period', 'ask_date', 'confirm'
+]);
+
+/** Rótulo de intenção de versões antigas → chave atual. */
+const LEGADO_SUBJECT = {
+  'agendar serviço': 'agendar', 'agendar servico': 'agendar',
+  'valores e pacotes': 'valores', 'dúvida sobre preço': 'valores',
+  'duvida sobre preco': 'valores', 'outro assunto': 'duvida'
+};
+
+/**
+ * Traz dados gravados por versões anteriores para o formato atual, para que
+ * quem estava no meio de uma conversa não recomece do zero.
+ */
+function normalizarLegado(d) {
+  if (!d.intent && d.subject) {
+    const k = LEGADO_SUBJECT[norm(d.subject)];
+    if (k) d.intent = k;
+    else if (!d.service) d.service = d.subject;   // era um serviço escrito à mão
+  }
+  return d;
+}
+
 /* ---------------- Horário ---------------- */
 
 function localNow() {
@@ -200,7 +226,9 @@ function pergunta(step, d) {
     }
 
     default:
-      return null;
+      // Nunca deve acontecer: proximoPasso() só devolve passos conhecidos.
+      console.warn(`[flow] pergunta() sem caso para "${step}"`);
+      return 'Como podemos ajudar você hoje?\n\n' + menu(INTENTS) + RODAPE_MENU;
   }
 }
 
@@ -398,12 +426,17 @@ export async function handleMessage({ phone, text, pushName }) {
   }
 
   const primeiroContato = !session;
-  const d = { ...(session?.data || {}), phone };
-  const passoAnterior = session?.step || 'ask_name';
+  const d = normalizarLegado({ ...(session?.data || {}), phone });
+
+  // Sessão gravada por uma versão anterior do fluxo pode ter um passo que já
+  // não existe. Tratá-la como passo desconhecido evita responder "null" a
+  // quem estava no meio de uma conversa quando o deploy aconteceu.
+  const bruto = session?.step || 'ask_name';
+  const passoAnterior = PASSOS.has(bruto) ? bruto : null;
 
   /* 1. Responde ao que foi perguntado. */
   let extra = null;
-  if (!primeiroContato) {
+  if (!primeiroContato && passoAnterior) {
     const r = interpretar(passoAnterior, text, d);
     if (r.extra) extra = r.extra;
 

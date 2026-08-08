@@ -299,6 +299,26 @@ try {
   const tC = await triagemDe(C);
   tC?.intent === 'duvida' ? ok('registrada como dúvida') : no(`intent: ${tC?.intent}`);
 
+  /* ---------- 8b · Sessão de versão anterior ---------- */
+  head('8b · Sessão gravada por versão antiga do fluxo');
+  const D = '5588000000094';
+  await sb.from('bot_sessions').delete().eq('phone', D);
+  await sb.from('bot_sessions').insert([{
+    phone: D, step: 'ask_vehicle',                    // passo que já não existe
+    data: { phone: D, name: 'Sérgio', subject: 'Agendar serviço' },
+    handed_off: false, updated_at: new Date().toISOString()
+  }]);
+  let nD = sent.length;
+  await diz('Corolla', { de: D });
+  const respD = sent.slice(nD).filter(x => x.number === D).map(x => x.text).join(' ');
+  respD ? ok('respondeu apesar do passo desconhecido') : no('não respondeu');
+  !/null|undefined/.test(respD) ? ok('sem "null" na mensagem') : no('enviou null/undefined', respD);
+  const sD = await sessaoDe(D);
+  sD?.data?.intent === 'agendar' ? ok('subject antigo migrado para intent') : no(`intent: ${sD?.data?.intent}`);
+  sD?.data?.name === 'Sérgio' ? ok('nome preservado — não recomeçou do zero') : no('perdeu o nome');
+  await sb.from('bot_sessions').delete().eq('phone', D);
+  await sb.from('messages').delete().eq('phone', D);
+
   /* ---------- 9 · Filtros ---------- */
   head('9 · Filtros: própria mensagem, grupo, reentrega');
   let n = sent.length;
