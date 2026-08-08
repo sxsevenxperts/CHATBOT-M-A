@@ -43,6 +43,38 @@ const wrap = fn => (req, res) =>
     res.status(500).json({ error: err?.message || 'Erro interno' });
   });
 
+/** Quantos minutos o fuso está à frente do UTC naquele instante. */
+function offsetMinutos(instante, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  const p = Object.fromEntries(dtf.formatToParts(instante).map(x => [x.type, x.value]));
+  const comoSeFosseUTC = Date.UTC(p.year, Number(p.month) - 1, p.day, p.hour, p.minute, p.second);
+  return (comoSeFosseUTC - instante.getTime()) / 60000;
+}
+
+/**
+ * 00:00 de um dia LOCAL, convertido para o instante UTC correspondente.
+ *
+ * O dashboard escolhe datas no fuso da loja; o banco guarda UTC. Comparar
+ * "2026-08-08" direto com `>= 2026-08-08T00:00:00Z` erra em 3 horas em Sobral:
+ * uma mensagem das 22h caía no dia seguinte. Calcular pelo fuso resolve, e
+ * continua correto se o fuso mudar.
+ */
+function inicioDoDiaLocalEmUTC(diaISO, tz) {
+  const palpite = new Date(diaISO + 'T00:00:00Z');
+  const off = offsetMinutos(palpite, tz);
+  return new Date(palpite.getTime() - off * 60000).toISOString();
+}
+
+function somaDias(diaISO, n) {
+  const d = new Date(diaISO + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * URL pública desta aplicação.
  *
@@ -159,18 +191,14 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   function filtros(req) {
     const dia = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
     const de = dia(req.query.de);
-    const ateDia = dia(req.query.ate);
-
-    let ate = null;
-    if (ateDia) {
-      const d = new Date(ateDia + 'T00:00:00Z');
-      d.setUTCDate(d.getUTCDate() + 1);
-      ate = d.toISOString().slice(0, 10);
-    }
+    const ate = dia(req.query.ate);
+    const tz = str('TIMEZONE', 'America/Fortaleza');
 
     return {
-      de: de ? de + 'T00:00:00Z' : null,
-      ate: ate ? ate + 'T00:00:00Z' : null,
+      de: de ? inicioDoDiaLocalEmUTC(de, tz) : null,
+      // `ate` é o último dia desejado: o corte vai para 00:00 do dia seguinte,
+      // que é o único jeito de incluir o dia inteiro.
+      ate: ate ? inicioDoDiaLocalEmUTC(somaDias(ate, 1), tz) : null,
       incluirTestes: req.query.testes === '1'
     };
   }

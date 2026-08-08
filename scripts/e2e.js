@@ -71,6 +71,11 @@ app.stdout.on('data', d => { appLog += d; });
 app.stderr.on('data', d => { appLog += d; });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const somaUm = diaISO => {
+  const d = new Date(diaISO + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
 
 async function waitUp() {
   for (let i = 0; i < 70; i++) {
@@ -530,6 +535,33 @@ try {
 
     const futuro = await get(`triages?testes=1&de=${amanha}&ate=${depois}`);
     nossos(futuro).length === 0 ? ok('período futuro devolve vazio') : no(`período futuro devolveu ${nossos(futuro).length}`);
+
+    // Fuso: uma mensagem das 22h em Sobral (UTC-3) é gravada como 01:00Z do dia
+    // seguinte. Comparar a data local contra limites UTC a jogava no dia errado.
+    {
+      const TZ_PHONE = '5588000000777';
+      await sb.from('triages').delete().eq('phone', TZ_PHONE);
+
+      // 22:00 locais de hoje = 01:00Z de amanhã.
+      const hojeLocal = new Date(Date.now() - 3 * 3600_000).toISOString().slice(0, 10);
+      const instante = new Date(hojeLocal + 'T22:00:00-03:00').toISOString();
+
+      await sb.from('triages').insert([{
+        phone: TZ_PHONE, name: 'Noite', is_test: true, status: 'pending',
+        origin: 'chatbot', created_at: instante
+      }]);
+
+      const noDia = await get(`triages?testes=1&de=${hojeLocal}&ate=${hojeLocal}`);
+      noDia.some(r => r.phone === TZ_PHONE)
+        ? ok(`mensagem das 22h fica no dia local correto (${hojeLocal}, gravada ${instante.slice(11,16)}Z)`)
+        : no(`22h caiu fora do dia local ${hojeLocal}`);
+
+      const diaSeguinte = await get(`triages?testes=1&de=${somaUm(hojeLocal)}&ate=${somaUm(hojeLocal)}`);
+      diaSeguinte.some(r => r.phone === TZ_PHONE)
+        ? no('22h vazou para o dia seguinte') : ok('22h não vaza para o dia seguinte');
+
+      await sb.from('triages').delete().eq('phone', TZ_PHONE);
+    }
 
     const invalida = await get('triages?testes=1&de=nao-e-data');
     Array.isArray(invalida) ? ok('data inválida é ignorada, não quebra a rota') : no('data inválida quebrou a rota');
