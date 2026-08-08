@@ -848,6 +848,22 @@ try {
     await ack('NAO-EXISTE-999', 'DELIVERY_ACK');
     ok('ACK de id desconhecido é ignorado sem erro');
 
+    // ERROR = recusa do WhatsApp, não demora. Precisa ser distinguido.
+    const antes2 = sent.length;
+    await diz('Sérgio', { de: E });
+    const seg = sent.slice(antes2).find(x => x.number === E);
+    if (seg?.waId) {
+      await ack(seg.waId, 'ERROR');
+      const { data: rej } = await sb.from('messages').select('status').eq('wa_id', seg.waId).limit(1);
+      rej?.[0]?.status === 'ERROR' ? ok('ACK de ERROR é registrado') : no(`status: ${rej?.[0]?.status}`);
+      const e2 = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, auth)).json();
+      e2.rejeitadas >= 1 ? ok(`resumo conta as rejeitadas (${e2.rejeitadas})`) : no(`rejeitadas: ${e2.rejeitadas}`);
+      e2.saudavel === false ? ok('rejeição derruba o veredito de saúde') : no(`saudavel: ${e2.saudavel}`);
+    }
+    const pagRej = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    pagRej.includes('REJEITADA pelo WhatsApp') ? ok('dashboard mostra "REJEITADA" por mensagem') : no('rótulo de rejeição ausente');
+    pagRej.includes('é recusa') ? ok('alarme distingue recusa de demora') : no('alarme não distingue');
+
     const ent = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, auth)).json();
     typeof ent.enviadas === 'number' ? ok(`resumo de entrega responde (${ent.entregues}/${ent.enviadas})`) : no('resumo não respondeu');
     'saudavel' in ent ? ok('resumo diz se está saudável (ou null sem dado)') : no('sem veredito');
