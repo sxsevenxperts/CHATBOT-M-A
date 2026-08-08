@@ -104,7 +104,7 @@ escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
 | Situação | Aguardando → Em atendimento → Concluída / Descartada |
 | Reativar bot | Devolve um número à triagem automática antes das 24 h |
 | Fluxo de mensagens | Últimas mensagens trocadas, entrada e saída |
-| Conexão | Status do WhatsApp, QR Code se cair, e **Sincronizar webhook** |
+| Conexão | Status do WhatsApp · **Conectar / Gerar QR** · **Reiniciar instância** · **Sincronizar webhook** — religar não exige abrir o Evolution Manager |
 | Caixa preta | Últimos eventos do sistema, com filtro por nível |
 
 Para regerar os assets da marca a partir da arte:
@@ -254,7 +254,7 @@ vem com o conserto.
 npm test
 ```
 
-**158 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**166 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -307,6 +307,8 @@ O que existe é redução de risco e recuperação rápida:
 | Monitor a cada 60 s | Antes, o status era medido só no boot: caiu às 09:45 e o `/health` seguiu dizendo `ready: true` por horas |
 | Reconexão automática | Queda transitória volta sozinha, sem ninguém olhar |
 | Alarme com QR no dashboard | Quando precisa de QR, ele aparece no próprio alerta com o passo a passo |
+| Botões Conectar / Reiniciar | Religar pelo dashboard, sem abrir o Evolution Manager |
+| **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
 | `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
 
 **A única forma de ter conexão que não depende de sessão de aparelho é a API
@@ -397,6 +399,8 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/stats` | Números do topo — mesmos filtros |
 | `GET` | `/admin/api/log` | Caixa preta (`?level=error`) |
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
+| `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
+| `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
 | `GET` | `/admin/api/build` | Selo do build |
 
 `de` e `ate` são datas `YYYY-MM-DD` **no fuso da loja** (`TIMEZONE`); `ate`

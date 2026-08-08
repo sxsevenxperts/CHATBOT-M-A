@@ -100,6 +100,12 @@ export async function reconnect() {
   };
 }
 
+/** Reinicia a instância. Resolve estado travado sem precisar do Evolution Manager. */
+export async function restartInstance() {
+  const { data } = await client().post(`/instance/restart/${encodeURIComponent(conf().instance)}`);
+  return data;
+}
+
 /** QR code para pareamento (só existe quando a instância está desconectada). */
 export async function getQrCode(instanceName) {
   instanceName = instanceName || conf().instance;
