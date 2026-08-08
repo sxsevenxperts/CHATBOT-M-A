@@ -118,7 +118,7 @@ escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
 | Situação | Aguardando → Em atendimento → Concluída / Descartada |
 | Reativar bot | Devolve um número à triagem automática antes das 24 h |
 | Fluxo de mensagens | Últimas mensagens trocadas, entrada e saída |
-| Conexão | Status do WhatsApp · **Conectar / Gerar QR** · **Reiniciar instância** · **Sincronizar webhook** — religar não exige abrir o Evolution Manager |
+| Conexão | Status · **Conectar / Gerar QR** · **Reiniciar instância** · **Desconectar e pareear** · **Retomar conversas** · **Sincronizar webhook** — tudo sem abrir o Evolution Manager |
 | Caixa preta | Últimos eventos do sistema, com filtro por nível |
 | **Estabilidade da conexão** | Quedas, tempo fora, maior queda e disponibilidade em 24h / 7 / 30 dias — **sobrevive a deploy**, ao contrário da caixa preta |
 
@@ -269,7 +269,7 @@ vem com o conserto.
 npm test
 ```
 
-**199 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**203 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -327,6 +327,24 @@ O que existe é redução de risco e recuperação rápida:
 | Painel da conexão oficial | Migrar para a Cloud API da Meta pelo próprio dashboard |
 | **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
 | `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
+
+### Quando a mensagem é aceita mas não chega
+
+Sintoma visto em 08/08/2026: a Evolution respondia `state: open`, aceitava o
+`sendText` com `status: PENDING`, guardava a mensagem — **e o cliente não
+recebia**. O socket estava autenticado de verdade (uma consulta de número
+retornou o nome do contato), então não era sessão morta.
+
+**Reiniciar não resolve** esse caso: o estado interno continua "conectado". O
+que resolve é **logout**, que força credencial nova. Por isso o painel Conexão
+tem o botão **Desconectar e pareear** — ele encerra a sessão e devolve o QR na
+tela.
+
+Ordem para tentar, do menos ao mais invasivo:
+
+1. **Conectar / Gerar QR** — queda comum, religa
+2. **Reiniciar instância** — estado travado
+3. **Desconectar e pareear** — aceita o envio mas não entrega
 
 ### A API oficial resolve — mas tem uma consequência que decide tudo
 
@@ -442,6 +460,7 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
+| `POST` | `/admin/api/whatsapp/desconectar` | Logout + QR do novo pareamento |
 | `POST` | `/admin/api/whatsapp/oficial` | Cria conexão pela Cloud API da Meta |
 | `POST` | `/admin/api/retomar` | Retoma conversas paradas (`{horas}`) |
 | `GET` | `/admin/api/build` | Selo do build |

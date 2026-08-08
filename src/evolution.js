@@ -124,6 +124,28 @@ export async function criarInstanciaOficial({ instanceName, number, token, busin
   return data;
 }
 
+/**
+ * Encerra a sessão e devolve o QR do novo pareamento.
+ *
+ * É o remédio para o caso em que a Evolution diz `open`, aceita o envio e a
+ * mensagem não chega — aconteceu em 08/08/2026. Reiniciar não resolve, porque
+ * o estado interno segue "conectado"; só o logout força credencial nova.
+ */
+export async function logoutEPareaerDeNovo() {
+  const inst = encodeURIComponent(conf().instance);
+  await client().delete(`/instance/logout/${inst}`);
+
+  // O QR não sai no mesmo instante: a Evolution precisa fechar o socket antes.
+  for (let i = 0; i < 6; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const { data } = await client().get(`/instance/connect/${inst}`);
+      if (data?.base64) return { qr: data.base64, pairingCode: data.pairingCode || null };
+    } catch { /* ainda fechando */ }
+  }
+  return { qr: null, pairingCode: null };
+}
+
 /** Reinicia a instância. Resolve estado travado sem precisar do Evolution Manager. */
 export async function restartInstance() {
   const { data } = await client().post(`/instance/restart/${encodeURIComponent(conf().instance)}`);

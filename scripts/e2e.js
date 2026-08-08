@@ -57,6 +57,8 @@ mock.get('/instance/connect/:i', (_q, r) => r.json(
                         : { base64: 'data:image/png;base64,QUJD', pairingCode: null, code: 'x' }
 ));
 mock.post('/instance/restart/:i', (_q, r) => { restarts++; r.json({ ok: true }); });
+let logouts = 0;
+mock.delete('/instance/logout/:i', (_q, r) => { logouts++; statusMock = 'close'; r.json({ status: 'SUCCESS' }); });
 const criadas = [];
 mock.post('/instance/create', (q, r) => { criadas.push(q.body); r.json({ instance: { instanceName: q.body.instanceName } }); });
 const mockServer = mock.listen(MOCK_PORT);
@@ -615,6 +617,13 @@ try {
 
     const rr = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/reiniciar`, { method:'POST', ...auth })).json();
     rr.ok === true ? ok('rota de reiniciar a instância responde') : no('reiniciar falhou');
+
+    // Logout: o remédio para "aceita o envio e a mensagem não chega"
+    page.includes('btnDesconectar') ? ok('botão "Desconectar e pareear" na página') : no('botão de logout ausente');
+    const lo = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/desconectar`, { method:'POST', ...auth })).json();
+    lo.ok === true ? ok('rota de logout responde') : no(`logout falhou: ${lo.error}`);
+    logouts >= 1 ? ok('chamou o logout na Evolution') : no('não chamou o logout');
+    lo.qr ? ok('devolve o QR do novo pareamento') : no('logout sem QR');
 
     (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/conectar`, { method:'POST' })).status === 401
       ? ok('rotas de conexão exigem token') : no('rotas de conexão expostas');
