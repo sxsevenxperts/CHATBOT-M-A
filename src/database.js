@@ -119,6 +119,58 @@ export async function getMessages({ limit = 100, incluirTestes = false, de = nul
   return data;
 }
 
+/* ---------------- Histórico de conexão ---------------- */
+
+/**
+ * Grava queda/volta da conexão.
+ *
+ * A caixa preta é em memória e zera a cada deploy — não responde "quantas
+ * vezes caiu esta semana?". Isto sobrevive, e é o que transforma "acho que cai
+ * muito" em número.
+ */
+export async function registrarEventoConexao({ instance, event, status, foraMin, tentativas, detalhe }) {
+  const { error } = await db().from('connection_events').insert([{
+    instance: instance || null,
+    event,
+    status: status || null,
+    fora_min: Number.isFinite(foraMin) ? foraMin : null,
+    tentativas: tentativas || 0,
+    detalhe: detalhe || null
+  }]);
+  if (error) warn('db.eventoConexaoFalhou', { erro: error.message });
+}
+
+/** Quedas, tempo fora e disponibilidade no período. */
+export async function resumoConexao({ dias = 7 } = {}) {
+  const desde = new Date(Date.now() - dias * 86400_000).toISOString();
+
+  const { data, error } = await db()
+    .from('connection_events').select('*')
+    .gte('created_at', desde)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+
+  const eventos = data || [];
+  const quedas = eventos.filter(e => e.event === 'caiu');
+  const voltas = eventos.filter(e => e.event === 'voltou');
+  const minutosFora = voltas.reduce((a, v) => a + (v.fora_min || 0), 0);
+  const minutosNoPeriodo = dias * 24 * 60;
+
+  return {
+    dias,
+    quedas: quedas.length,
+    voltas: voltas.length,
+    minutosFora,
+    // Só conta o que temos registro; sem histórico, não invento disponibilidade.
+    disponibilidade: eventos.length
+      ? Number((100 - (minutosFora / minutosNoPeriodo) * 100).toFixed(2))
+      : null,
+    maiorQuedaMin: voltas.reduce((m, v) => Math.max(m, v.fora_min || 0), 0) || null,
+    ultimaQueda: quedas[0]?.created_at || null,
+    eventos: eventos.slice(0, 40)
+  };
+}
+
 /* ---------------- Keepalive ---------------- */
 
 /**

@@ -660,6 +660,36 @@ try {
       ? ok('rota exige token de acesso') : no('rota exposta');
   }
 
+  /* ---------- 12f · Histórico de conexão que sobrevive a deploy ---------- */
+  head('12f · Histórico de quedas persistido no banco');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token } };
+    const hist = await (await fetch(`http://localhost:${APP_PORT}/admin/api/conexao/historico?dias=7`, auth)).json();
+
+    typeof hist.quedas === 'number' ? ok(`histórico responde (${hist.quedas} queda(s) em 7 dias)`) : no('histórico não respondeu');
+    'disponibilidade' in hist ? ok('calcula disponibilidade') : no('sem disponibilidade');
+    Array.isArray(hist.eventos) ? ok('traz os eventos do período') : no('sem lista de eventos');
+
+    // A simulação de queda da seção 12b deve ter deixado registro no BANCO.
+    const { data: gravados } = await sb.from('connection_events')
+      .select('*').gte('created_at', new Date(Date.now() - 600_000).toISOString())
+      .order('created_at', { ascending: false });
+    (gravados || []).some(e => e.event === 'caiu')
+      ? ok('a queda simulada ficou gravada no banco (sobrevive a deploy)') : no('queda não foi persistida');
+    (gravados || []).some(e => e.event === 'voltou')
+      ? ok('a volta também ficou gravada') : no('volta não persistida');
+
+    const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    page.includes('Estabilidade da conexão') ? ok('painel de estabilidade na página') : no('painel ausente');
+    page.includes('chipsDias') ? ok('filtro 24h / 7 dias / 30 dias') : no('filtro de período ausente');
+
+    (await fetch(`http://localhost:${APP_PORT}/admin/api/conexao/historico`)).status === 401
+      ? ok('histórico exige token') : no('histórico exposto');
+
+    // limpa o que a simulação gerou
+    await sb.from('connection_events').delete().gte('created_at', new Date(Date.now() - 600_000).toISOString());
+  }
+
   /* ---------- 12e · Retomada depois da queda ---------- */
   head('12e · Retoma conversas interrompidas por queda de conexão');
   {
