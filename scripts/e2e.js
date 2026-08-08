@@ -972,6 +972,23 @@ try {
     });
     ruim.status === 400 ? ok('sonda recusa número inválido') : no(`sonda aceitou número inválido (${ruim.status})`);
 
+    // O freio mora em memória: o boot pergunta ao banco como terminou a última
+    // mensagem com veredito, senão um deploy religaria um canal recusando.
+    const { ultimoVereditoEnvio, initSupabase } = await import('../src/database.js');
+    await initSupabase();
+    const G = '5588000000813';
+    await sb.from('messages').delete().eq('phone', G);
+    await sb.from('messages').insert([{ phone: G, direction: 'out', body: 'recusada',
+      is_test: false, wa_id: 'VEREDITO-ERR', status: 'ERROR', status_at: new Date().toISOString() }]);
+    let v = await ultimoVereditoEnvio({ horas: 24 });
+    v?.recusado === true ? ok('boot enxerga a última mensagem recusada') : no(`veredito: ${JSON.stringify(v)}`);
+
+    await sb.from('messages').insert([{ phone: G, direction: 'out', body: 'entregue',
+      is_test: false, wa_id: 'VEREDITO-OK', status: 'DELIVERY_ACK', status_at: new Date().toISOString() }]);
+    v = await ultimoVereditoEnvio({ horas: 24 });
+    v?.recusado === false ? ok('entrega posterior desfaz o veredito de recusa') : no(`veredito: ${JSON.stringify(v)}`);
+    await sb.from('messages').delete().eq('phone', G);
+
     await liberar();
     for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', F);
   }

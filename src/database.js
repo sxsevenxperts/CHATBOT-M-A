@@ -132,6 +132,28 @@ export async function statusPorWaId(waId) {
 }
 
 /**
+ * Último veredito conhecido do canal de envio.
+ *
+ * O freio mora em memória, então um deploy zeraria ele e o bot voltaria a
+ * insistir num canal recusando — o exato comportamento que o freio existe para
+ * impedir. Aqui o boot pergunta ao banco como terminou a última mensagem que
+ * teve resposta definitiva do WhatsApp.
+ */
+export async function ultimoVereditoEnvio({ horas = 24 } = {}) {
+  const desde = new Date(Date.now() - horas * 3600_000).toISOString();
+  const { data, error } = await db().from('messages')
+    .select('status, status_at, created_at')
+    .eq('direction', 'out').eq('is_test', false)
+    .in('status', ['ERROR', 'DELIVERY_ACK', 'READ', 'PLAYED'])
+    .gte('created_at', desde)
+    .order('created_at', { ascending: false }).limit(1);
+  if (error) { warn('db.ultimoVereditoFalhou', { erro: error.message }); return null; }
+  const m = (data || [])[0];
+  if (!m) return null;
+  return { status: m.status, em: m.status_at || m.created_at, recusado: m.status === 'ERROR' };
+}
+
+/**
  * As mensagens que saíram estão realmente CHEGANDO?
  *
  * Aceite não é entrega. Este resumo é o detector da falha silenciosa que
