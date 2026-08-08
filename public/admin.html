@@ -393,6 +393,7 @@
     <div class="top-right">
       <span class="pill" id="pillWa"><i class="dot"></i> WhatsApp</span>
       <span class="pill" id="pillWh"><i class="dot"></i> Webhook</span>
+      <span class="pill" id="pillEnt"><i class="dot"></i> Entrega</span>
       <button class="btn btn-sm bell" id="bell" title="Marcar notificações como vistas">
         Novas <span class="count" id="bellCount">0</span>
       </button>
@@ -925,7 +926,11 @@ function renderFeed(list) {
     const d = document.createElement('div');
     d.className = 'msg ' + (m.direction === 'in' ? 'in' : 'out');
     const lb = document.createElement('span'); lb.className = 'label';
-    lb.textContent = `${m.direction === 'in' ? 'Cliente' : 'Bot'} · ${fone(m.phone)} · ${quando(m.created_at)}`;
+    const ENT = { PENDING:'⏳ enviando', SERVER_ACK:'✓ no servidor', DELIVERY_ACK:'✓✓ entregue', READ:'✓✓ lida', PLAYED:'✓✓ ouvida' };
+    const st = m.direction === 'out'
+      ? ' · ' + (ENT[m.status] || (m.status ? m.status : '⏳ sem confirmação'))
+      : '';
+    lb.textContent = `${m.direction === 'in' ? 'Cliente' : 'Bot'} · ${fone(m.phone)} · ${quando(m.created_at)}${st}`;
     const p = document.createElement('p'); p.textContent = m.body || '';
     d.append(lb, p);
     f.appendChild(d);
@@ -1066,6 +1071,31 @@ function renderStatus(s) {
   const ph = $('#pillWh');
   ph.querySelector('.dot').className = 'dot ' + (wh.correct ? 'on' : 'warn');
   ph.lastChild.textContent = wh.correct ? ' Webhook ok' : ' Webhook a ajustar';
+
+  // Entrega: aceite não é entrega. Esta pílula mostra a diferença.
+  const ent = s.entrega || {};
+  const pe = $('#pillEnt');
+  pe.querySelector('.dot').className = 'dot ' +
+    (ent.saudavel === true ? 'on' : ent.saudavel === false ? 'off' : 'warn');
+  pe.lastChild.textContent = ent.saudavel === true
+    ? ` Entrega ok (${ent.entregues}/${ent.enviadas})`
+    : ent.saudavel === false ? ' Entrega FALHANDO' : ' Entrega sem dados';
+
+  // Alarme: mensagens aceitas e não entregues é falha silenciosa — a pior.
+  if (ent.saudavel === false && banner.dataset.reason !== 'whatsapp') {
+    banner.dataset.reason = 'entrega';
+    banner.classList.add('grave');
+    banner.style.display = 'block';
+    $('#bannerMsg').innerHTML =
+      '<strong>As mensagens do bot NÃO estão sendo entregues.</strong><br>' +
+      `${ent.semConfirmacao} mensagem(ns) dos últimos ${ent.minutos} min saíram sem confirmação de entrega. ` +
+      'A Evolution aceita, o WhatsApp não entrega.<br>' +
+      'Remédio: <strong>Desconectar e pareear</strong> no painel Conexão — reiniciar não resolve este caso.';
+  } else if (banner.dataset.reason === 'entrega' && ent.saudavel !== false) {
+    delete banner.dataset.reason;
+    banner.classList.remove('grave');
+    banner.style.display = 'none';
+  }
 
   const boot = s.boot || {};
   const faltando = boot.env?.missing || [];

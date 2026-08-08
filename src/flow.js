@@ -153,8 +153,9 @@ async function reply(phone, text) {
     await sendPresence(phone, 'composing');
     await sleep(wait);
   }
-  await sendText(phone, text);
-  await logMessage(phone, 'out', text);
+  // Guarda o id do WhatsApp: é por ele que o ACK de entrega volta.
+  const r = await sendText(phone, text);
+  await logMessage(phone, 'out', text, r?.waId || null, r?.status || null);
 }
 
 /* ---------------- Árvore dinâmica ---------------- */

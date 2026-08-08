@@ -127,7 +127,11 @@ if (base && process.env.EVOLUTION_API_KEY) {
     if (events.includes('SEND_MESSAGE')) {
       bad('evento SEND_MESSAGE habilitado — causa LOOP INFINITO', 'deixe só MESSAGES_UPSERT ("Sincronizar webhook" no /admin resolve)');
     } else if (events.includes('MESSAGES_UPSERT')) {
-      ok(`eventos ok (${events.length}): ${events.join(', ')}`);
+      ok(`MESSAGES_UPSERT habilitado — o bot recebe mensagens`);
+      events.includes('MESSAGES_UPDATE')
+        ? ok('MESSAGES_UPDATE habilitado — dá para saber se a mensagem foi ENTREGUE')
+        : bad('MESSAGES_UPDATE não habilitado',
+              'sem ele, envio aceito e não entregue fica invisível — clique "Sincronizar webhook" no /admin');
     } else {
       bad('MESSAGES_UPSERT não está habilitado', 'o bot nunca receberá mensagens — sincronize o webhook');
     }
@@ -136,6 +140,30 @@ if (base && process.env.EVOLUTION_API_KEY) {
   }
 } else {
   bad('Evolution não testada (faltam credenciais)');
+}
+
+/* ---------- 5. Entrega ---------- */
+head('5 · Entrega das mensagens (aceite ≠ entrega)');
+
+if (process.env.SUPABASE_URL && supaKey) {
+  const sb2 = createClient(process.env.SUPABASE_URL, supaKey, { auth: { persistSession: false } });
+  const desde = new Date(Date.now() - 6 * 3600_000).toISOString();
+  const { data, error } = await sb2.from('messages')
+    .select('status, created_at').eq('direction', 'out').eq('is_test', false)
+    .gte('created_at', desde);
+
+  if (error) {
+    bad(`não consegui ler as mensagens: ${error.message}`);
+  } else if (!data.length) {
+    warn('nenhuma mensagem enviada nas últimas 6h', 'sem dado para julgar a entrega');
+  } else {
+    const entregues = data.filter(m => ['DELIVERY_ACK', 'READ', 'PLAYED'].includes(m.status)).length;
+    const semAck = data.filter(m => !m.status || m.status === 'PENDING').length;
+    console.log(`     ${data.length} enviadas · ${entregues} confirmadas · ${semAck} sem confirmação`);
+    if (entregues > 0) ok('há confirmação de entrega — o envio está chegando');
+    else bad('NENHUMA confirmação de entrega nas últimas 6h',
+             'a Evolution aceita e o WhatsApp engole; use "Desconectar e pareear" no /admin');
+  }
 }
 
 /* ---------- Resumo ---------- */

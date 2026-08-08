@@ -159,14 +159,20 @@ export async function getQrCode(instanceName) {
   return { base64: data?.base64 || null, code: data?.code || null, pairingCode: data?.pairingCode || null };
 }
 
-/** Envia texto. Payload v2: {number, text}. */
+/**
+ * Envia texto. Payload v2: {number, text}.
+ *
+ * Devolve o id da mensagem no WhatsApp. Ele é a chave para saber se ela foi
+ * ENTREGUE — a resposta desta chamada só diz que a Evolution aceitou, com
+ * status PENDING. Tratar aceite como entrega custou um dia inteiro.
+ */
 export async function sendText(number, text) {
   const to = String(number).replace(/\D/g, '');
   const { data } = await client().post(`/message/sendText/${encodeURIComponent(conf().instance)}`, {
     number: to,
     text
   });
-  return data;
+  return { waId: data?.key?.id || null, status: data?.status || null, raw: data };
 }
 
 /**
@@ -193,9 +199,12 @@ export async function setWebhook(url) {
       url,
       webhookByEvents: false,
       webhookBase64: false,
-      // Só MESSAGES_UPSERT. Habilitar SEND_MESSAGE faz o bot receber
-      // webhook das próprias respostas -> loop infinito.
-      events: ['MESSAGES_UPSERT']
+      // MESSAGES_UPSERT: mensagens que chegam.
+      // MESSAGES_UPDATE: os ACKs de entrega das que saem — é o que revela
+      //   envio aceito e não entregue, que antes era invisível.
+      // SEND_MESSAGE continua FORA: ele faria o bot receber webhook das
+      //   próprias respostas e entrar em loop infinito.
+      events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE']
     }
   });
   return data;

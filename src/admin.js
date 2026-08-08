@@ -8,7 +8,7 @@ import express from 'express';
 
 import {
   getTriages, updateTriageStatus, getMessages, getStats, contarTestes,
-  purgeTestes, db, resetSession, resumoConexao
+  purgeTestes, db, resetSession, resumoConexao, resumoEntrega
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
@@ -139,7 +139,8 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     const out = {
       baseUrl: cfg.baseUrl, instance: cfg.instance,
       publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request',
-      boot: { db: state.db, env: state.env, whatsapp: state.whatsapp }
+      boot: { db: state.db, env: state.env, whatsapp: state.whatsapp },
+      entrega: state.entrega
     };
 
     try {
@@ -342,6 +343,12 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   api.get('/conexao/historico', wrap(async (req, res) => {
     const dias = Math.min(Math.max(Number(req.query.dias) || 7, 1), 90);
     res.json(await resumoConexao({ dias }));
+  }));
+
+  /** As mensagens estão sendo ENTREGUES? Aceite não é entrega. */
+  api.get('/entrega', wrap(async (req, res) => {
+    const minutos = Math.min(Math.max(Number(req.query.minutos) || 30, 5), 1440);
+    res.json(await resumoEntrega({ minutos }));
   }));
 
   /** Caixa preta: últimos eventos do sistema, para diagnosticar sem o console. */

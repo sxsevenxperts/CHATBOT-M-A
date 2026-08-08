@@ -1,4 +1,5 @@
 import { handleMessage } from './flow.js';
+import { atualizarStatusMensagem } from './database.js';
 import { info, warn, falha } from './recorder.js';
 import { serializar, filasAbertas } from './serial.js';
 
@@ -83,6 +84,19 @@ export function setupWebhook(app) {
     {
       body = body || {};
       const event = String(body.event || '').toLowerCase();
+
+      // ACK de entrega: é o que separa "aceito" de "chegou".
+      if (event.startsWith('messages.update')) {
+        const itens = Array.isArray(body.data) ? body.data : [body.data].filter(Boolean);
+        for (const it of itens) {
+          const waId = it?.keyId || it?.key?.id || it?.id || null;
+          const st = it?.status || it?.update?.status || null;
+          if (!waId || !st) continue;
+          const achou = await atualizarStatusMensagem(waId, String(st).toUpperCase());
+          info('webhook.ack', { id: waId, status: st, casou: achou });
+        }
+        return;
+      }
 
       if (event && !event.startsWith('messages.upsert')) {
         info('webhook.ignorado', { motivo: 'outro evento', evento: event });
