@@ -36,8 +36,9 @@ const head = t => console.log(`\n\x1b[1m${t}\x1b[0m`);
 const mock = express();
 mock.use(express.json());
 mock.get('/', (_q, r) => r.json({ version: '2.3.7-mock' }));
+let statusMock = 'open';
 mock.get('/instance/fetchInstances', (_q, r) => r.json([{
-  name: '3041', connectionStatus: 'open',
+  name: '3041', connectionStatus: statusMock,
   ownerJid: '558881553041@s.whatsapp.net', profileName: 'SX (mock)'
 }]));
 mock.post('/chat/sendPresence/:i', (q, r) => { presences.push(q.body); r.json({ ok: true }); });
@@ -60,7 +61,7 @@ const app = spawn(process.execPath, ['src/index.js'], {
     PORT: String(APP_PORT), ALT_PORT: String(APP_PORT),
     PUBLIC_URL: `http://localhost:${APP_PORT}`,
     REPLY_DELAY_MIN_MS: '250', REPLY_DELAY_MAX_MS: '350',
-    KEEPALIVE_HOURS: '0', REARM_HOURS: '24',
+    KEEPALIVE_HOURS: '0', REARM_HOURS: '24', MONITOR_SECONDS: '1',
     TEST_PHONES: [A, B, C, '5588000000094'].join(','),
     NODE_ENV: 'test'
   },
@@ -524,6 +525,9 @@ try {
   html.includes('#C61C29') ? ok('paleta da marca aplicada (#C61C29)') : no('paleta da marca ausente');
   html.includes('/admin/assets/badge.png') ? ok('badge da marca no hero e no header') : no('badge ausente');
   html.includes('Caixa preta') ? ok('painel da caixa preta na página') : no('painel da caixa preta ausente');
+  html.includes('WhatsApp desconectado') ? ok('dashboard tem o alarme de desconexão') : no('alarme de desconexão ausente');
+  html.includes('qrBanner') && html.includes('Aparelhos conectados')
+    ? ok('alarme traz o QR e o passo a passo para reconectar') : no('alarme sem QR/instruções');
   html.includes('SX SEVEN XPERTS') && html.includes('32.794.007/0001-19')
     ? ok('rodapé com assinatura e CNPJ da SX') : no('rodapé da SX ausente');
   html.includes('--sx-lima') && html.includes('--sx-turquesa')
@@ -532,6 +536,50 @@ try {
   for (const asset of ['badge.png', 'logo.png', 'favicon.png', 'apple-touch-icon.png']) {
     const r = await fetch(`http://localhost:${APP_PORT}/admin/assets/${asset}`);
     r.ok ? ok(`asset servido: ${asset}`) : no(`asset ${asset}: ${r.status}`);
+  }
+
+  /* ---------- 12b · Monitor da conexão ---------- */
+  head('12b · Queda de conexão do WhatsApp é detectada e denunciada');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token } };
+    const saude = async () => (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+
+    let h = await saude();
+    h.whatsapp.ok === true ? ok('parte conectado') : no('não partiu conectado');
+    h.ready === true ? ok('ready = true com tudo de pé') : no(`ready = ${h.ready}`);
+
+    // Simula a sessão caindo — foi o que aconteceu de verdade em produção.
+    statusMock = 'connecting';
+    await sleep(2600);                    // MONITOR_SECONDS = 1
+
+    h = await saude();
+    h.whatsapp.ok === false
+      ? ok('monitor percebeu a queda sozinho')
+      : no('/health continuou dizendo que está conectado — era o bug');
+    h.ready === false ? ok('ready virou false') : no(`ready = ${h.ready}`);
+    h.whatsapp.checkedAt ? ok('registra quando foi a última checagem') : no('sem checkedAt');
+
+    const log = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?level=error`, auth)).json();
+    const caiu = (log.eventos || []).find(e => e.event === 'whatsapp.caiu');
+    caiu ? ok('caixa preta registra a queda como ERRO') : no('queda não foi registrada como erro');
+    caiu?.meta?.acao ? ok(`o evento diz o que fazer: "${caiu.meta.acao}"`) : no('evento sem instrução');
+
+    const st = await (await fetch(`http://localhost:${APP_PORT}/admin/api/status`, auth)).json();
+    st.whatsapp?.connected === false ? ok('/status também reflete a queda') : no('/status desatualizado');
+    st.whatsapp?.caiuEm ? ok('/status informa desde quando está fora') : no('/status sem caiuEm');
+
+    const h2 = await saude();
+    h2.whatsapp?.caiuEm ? ok('/health informa desde quando está fora') : no('/health sem caiuEm');
+
+    // Volta ao normal
+    statusMock = 'open';
+    await sleep(2600);
+    h = await saude();
+    h.whatsapp.ok === true ? ok('monitor percebeu a volta') : no('não voltou');
+    h.ready === true ? ok('ready voltou para true') : no(`ready = ${h.ready}`);
+    const logInfo = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
+    (logInfo.eventos || []).some(e => e.event === 'whatsapp.voltou')
+      ? ok('caixa preta registra a reconexão') : no('reconexão não registrada');
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

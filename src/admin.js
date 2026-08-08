@@ -137,13 +137,17 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     const out = {
       baseUrl: cfg.baseUrl, instance: cfg.instance,
       publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request',
-      boot: { db: state.db, env: state.env }
+      boot: { db: state.db, env: state.env, whatsapp: state.whatsapp }
     };
 
     try {
-      out.whatsapp = await checkConnection();
+      const wa = await checkConnection();
+      // Junta o que o monitor acumulou: desde quando caiu, tentativas, se pede QR.
+      out.whatsapp = { ...wa, caiuEm: state.whatsapp?.caiuEm || null,
+                       tentativas: state.whatsapp?.tentativas || 0,
+                       precisaQr: !!state.whatsapp?.precisaQr };
     } catch (e) {
-      out.whatsapp = { connected: false, error: e.message };
+      out.whatsapp = { connected: false, error: e.message, caiuEm: state.whatsapp?.caiuEm || null };
     }
 
     try {

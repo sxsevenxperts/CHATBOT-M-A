@@ -152,6 +152,9 @@ console do container — invisível para quem opera.
 | `flow.handoff` | Triagem concluída — traz o número da triagem |
 | `flow.silenciado` | Cliente escreveu enquanto está com a atendente |
 | `flow.rearmado` | Passaram 24 h e o bot voltou a atender |
+| `whatsapp.caiu` | **ERRO** — a sessão do WhatsApp caiu; o bot parou de receber |
+| `whatsapp.reconectando` / `.precisaQr` | Tentativa automática de religar |
+| `whatsapp.voltou` | Reconectou, com quantos minutos ficou fora |
 | `keepalive.ok` / `.falhou` | Anti-pause do Supabase |
 | `ping.externo` | Cron externo tocou o banco |
 | `boot.*` | Banco, Evolution, webhook, portas, limpeza de testes |
@@ -251,7 +254,7 @@ vem com o conserto.
 npm test
 ```
 
-**143 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**158 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -288,7 +291,32 @@ para o banco — está anotado, não feito.
 
 ---
 
-## 9 · O Supabase vai pausar?
+## 9 · A conexão do WhatsApp pode cair?
+
+**Pode, e vai cair de novo em algum momento.** A Evolution usa Baileys, um
+cliente não oficial do WhatsApp Web: a sessão é um "aparelho conectado" e o
+WhatsApp pode invalidá-la a qualquer momento. Não existe configuração que
+impeça isso.
+
+O que existe é redução de risco e recuperação rápida:
+
+| Medida | O que resolve |
+|---|---|
+| Volume + Postgres na Evolution | A sessão sobrevive a restart do container (já estava certo) |
+| `zeroDowntime = false` na Evolution | Sem isso, um redeploy sobe dois containers com a MESMA credencial por alguns segundos; o WhatsApp vê dois aparelhos com a mesma identidade e derruba a sessão |
+| Monitor a cada 60 s | Antes, o status era medido só no boot: caiu às 09:45 e o `/health` seguiu dizendo `ready: true` por horas |
+| Reconexão automática | Queda transitória volta sozinha, sem ninguém olhar |
+| Alarme com QR no dashboard | Quando precisa de QR, ele aparece no próprio alerta com o passo a passo |
+| `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
+
+**A única forma de ter conexão que não depende de sessão de aparelho é a API
+oficial do WhatsApp (Cloud API, pela Meta).** É paga por conversa, exige
+verificação da empresa e não usa QR Code. Enquanto o canal for Baileys, o
+realista é: cai raramente, o sistema avisa na hora e volta em segundos.
+
+---
+
+## 10 · O Supabase vai pausar?
 
 Resposta honesta: **no plano free, não existe garantia.** O plano pausa projetos
 após **7 dias sem atividade** e não oferece nenhuma opção para desligar isso.
@@ -314,7 +342,7 @@ exatamente nos 2. Despausar outro pode afetar um dos ativos.
 
 ---
 
-## 10 · Estrutura
+## 11 · Estrutura
 
 ```
 src/
@@ -348,7 +376,7 @@ setup.sql       schema
 
 ---
 
-## 11 · API
+## 12 · API
 
 Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 
@@ -376,7 +404,7 @@ inclui o dia inteiro. Data inválida é ignorada em vez de quebrar a rota.
 
 ---
 
-## 12 · Armadilhas já pagas
+## 13 · Armadilhas já pagas
 
 Memória institucional. Cada uma custou tempo e está coberta por teste ou
 verificação — não reintroduza.
@@ -399,3 +427,5 @@ verificação — não reintroduza.
 | Aspas duplas em `--body` do `gh` | Comando some no shell | Crases viram substituição de comando; use heredoc |
 | Data local comparada com limite UTC | Mensagem das 22h caía no dia seguinte | Sobral é UTC−3: 00:00 local é 03:00Z |
 | Sem fila por telefone | "oi" + nome juntos → boas-vindas duas vezes e nome perdido | As duas mensagens liam a mesma sessão em paralelo |
+| Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
+| `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |

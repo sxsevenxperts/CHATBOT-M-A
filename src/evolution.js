@@ -84,6 +84,22 @@ export async function listInstances() {
   }));
 }
 
+/**
+ * Pede à Evolution para restabelecer a sessão.
+ *
+ * Serve para queda transitória (status `connecting`/`close`), que se resolve
+ * sozinha. Se a sessão foi invalidada pelo WhatsApp, devolve um QR — aí só
+ * escaneando. Em ambos os casos é melhor tentar do que esperar alguém notar.
+ */
+export async function reconnect() {
+  const { data } = await client().get(`/instance/connect/${encodeURIComponent(conf().instance)}`);
+  return {
+    precisaQr: !!data?.base64,
+    qr: data?.base64 || null,
+    pairingCode: data?.pairingCode || null
+  };
+}
+
 /** QR code para pareamento (só existe quando a instância está desconectada). */
 export async function getQrCode(instanceName) {
   instanceName = instanceName || conf().instance;
