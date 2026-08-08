@@ -166,9 +166,28 @@ try {
     });
   });
 
+  /* ---------- 0b · Nome não aceita saudação ---------- */
+  head('0b · "Oi"/"Ai" não viram nome do cliente');
+  {
+    const { nameFromAnswer } = await import('../src/extract.js');
+    ['Oi','oi','Ai','Blz','teste','ok'].every(x => nameFromAnswer(x) === null)
+      ? ok('saudações e interjeições rejeitadas') : no('alguma saudação virou nome');
+    nameFromAnswer('Sérgio') === 'Sérgio' ? ok('nome real é aceito') : no('rejeitou nome válido');
+    nameFromAnswer('Ana Paula') === 'Ana Paula' ? ok('nome composto é aceito') : no('rejeitou nome composto');
+  }
+
   /* ---------- 1 · Etapa 1: boas-vindas + nome ---------- */
   head('1 · Etapa 1 — boas-vindas e nome');
   await diz('oi');
+  {
+    const so = daPara(A).slice(-1)[0]?.text || '';
+    /qual é o seu nome/i.test(so) ? ok('"oi" não foi aceito como nome — repergunta') : no('"oi" virou nome', so);
+  }
+  await diz('Ai');
+  {
+    const so = daPara(A).slice(-1)[0]?.text || '';
+    !/Prazer, \*Ai\*/.test(so) ? ok('"Ai" também rejeitado como nome') : no('"Ai" virou nome');
+  }
   let m = ultima();
   /Bem-vindo à \*M & A Lavagens e Estética\*/.test(m) ? ok('boas-vindas com o nome da empresa') : no('boas-vindas ausente', m);
   /nossa atendente dará continuidade/.test(m) ? ok('explica que a atendente assume depois') : no('não explica o handoff');
@@ -572,10 +591,13 @@ try {
     h.ready === false ? ok('ready virou false') : no(`ready = ${h.ready}`);
     h.whatsapp.checkedAt ? ok('registra quando foi a última checagem') : no('sem checkedAt');
 
-    const log = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?level=error`, auth)).json();
-    const caiu = (log.eventos || []).find(e => e.event === 'whatsapp.caiu');
-    caiu ? ok('caixa preta registra a queda como ERRO') : no('queda não foi registrada como erro');
-    caiu?.meta?.acao ? ok(`o evento diz o que fazer: "${caiu.meta.acao}"`) : no('evento sem instrução');
+    const logTudo = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
+    const oscilou = (logTudo.eventos || []).find(e => e.event === 'whatsapp.oscilou');
+    oscilou ? ok('caixa preta marca a oscilação assim que detecta') : no('oscilação não registrada');
+    // A queda vai para o histórico persistente, não só para a caixa preta.
+    const { data: gravadas } = await sb.from('connection_events')
+      .select('event').gte('created_at', new Date(Date.now() - 120_000).toISOString());
+    (gravadas || []).some(e => e.event === 'caiu') ? ok('queda gravada no histórico persistente') : no('queda não persistida');
 
     const st = await (await fetch(`http://localhost:${APP_PORT}/admin/api/status`, auth)).json();
     st.whatsapp?.connected === false ? ok('/status também reflete a queda') : no('/status desatualizado');
@@ -591,8 +613,9 @@ try {
     h.whatsapp.ok === true ? ok('monitor percebeu a volta') : no('não voltou');
     h.ready === true ? ok('ready voltou para true') : no(`ready = ${h.ready}`);
     const logInfo = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
-    (logInfo.eventos || []).some(e => e.event === 'whatsapp.voltou')
-      ? ok('caixa preta registra a reconexão') : no('reconexão não registrada');
+    // Reconexão em segundos é 'piscou'; queda longa seria 'voltou'. Aqui é rápida.
+    (logInfo.eventos || []).some(e => e.event === 'whatsapp.piscou' || e.event === 'whatsapp.voltou')
+      ? ok('caixa preta registra a reconexão (piscada ou volta)') : no('reconexão não registrada');
   }
 
   /* ---------- 12c · Conectar pelo dashboard ---------- */
