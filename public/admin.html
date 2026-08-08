@@ -31,8 +31,9 @@
   html,body{height:100%}
   body{
     background:
-      radial-gradient(1150px 640px at 84% -14%, rgba(198,28,41,.14), transparent 62%),
-      radial-gradient(780px 480px at -10% 110%, rgba(128,21,47,.11), transparent 60%),
+      radial-gradient(1250px 700px at 84% -16%, rgba(198,28,41,.30), transparent 64%),
+      radial-gradient(900px 560px at -12% 112%, rgba(128,21,47,.24), transparent 62%),
+      linear-gradient(180deg, rgba(66,3,12,.42), transparent 46%),
       var(--bg);
     color:var(--text); font-family:var(--sans);
     font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased;
@@ -44,8 +45,9 @@
   /* ---------------- Login ---------------- */
   #login{min-height:100vh;display:grid;place-items:center;padding:24px}
   .login-card{
-    width:100%;max-width:420px;background:var(--surface);
-    border:1px solid var(--line);border-radius:18px;padding:40px 38px 34px;text-align:center;
+    width:100%;max-width:420px;
+    background:linear-gradient(180deg, rgba(198,28,41,.14), transparent 46%), var(--surface);
+    border:1px solid var(--brand-line);border-radius:18px;padding:40px 38px 34px;text-align:center;
     box-shadow:0 34px 80px -34px rgba(0,0,0,.9), 0 0 0 1px rgba(198,28,41,.06);
   }
   /* Badge circular: o disco branco vem embutido na arte, então a marca fica
@@ -85,9 +87,16 @@
 
   /* ---------------- Shell ---------------- */
   #app{display:none;max-width:1280px;margin:0 auto;padding:24px 24px 72px}
+  /* Faixa do vermelho da marca, atravessando o topo. */
+  body::before{
+    content:'';position:fixed;top:0;left:0;right:0;height:4px;z-index:50;
+    background:linear-gradient(90deg,var(--brand-dark),var(--brand),var(--brand-bright),var(--brand),var(--brand-deep));
+  }
   header.top{
     display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;
-    padding-bottom:20px;margin-bottom:24px;border-bottom:1px solid var(--line);
+    padding-bottom:20px;margin-bottom:24px;
+    border-bottom:1px solid var(--brand-line);
+    box-shadow:0 1px 0 rgba(198,28,41,.10);
   }
   .brand{display:flex;align-items:center;gap:14px}
   .brand img{
@@ -117,22 +126,37 @@
 
   /* ---------------- Stats ---------------- */
   .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
-  .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:17px 19px}
+  .stat{
+    background:linear-gradient(180deg, rgba(198,28,41,.07), transparent 70%), var(--surface);
+    border:1px solid var(--brand-line);border-radius:var(--r);padding:17px 19px;
+  }
   .stat .n{font-family:var(--serif);font-size:31px;line-height:1.1}
   .stat .label{margin-top:5px;display:block}
   .stat.hi{
-    border-color:var(--brand-line);
-    background:linear-gradient(180deg,var(--brand-soft),transparent);
+    border-color:var(--brand);
+    background:linear-gradient(180deg, rgba(198,28,41,.24), rgba(198,28,41,.05) 72%);
+    box-shadow:0 10px 26px -14px rgba(198,28,41,.55);
   }
-  .stat.hi .n{color:var(--brand-tint)}
+  .stat.hi .n{color:#FFD9DD}
 
   /* ---------------- Panels ---------------- */
-  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
+  .panel{
+    background:var(--surface);border:1px solid var(--brand-line);border-radius:var(--r);
+    overflow:hidden;margin-bottom:16px;
+  }
   .panel-head{
     display:flex;align-items:center;justify-content:space-between;gap:14px;
-    padding:15px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;
+    padding:15px 20px;flex-wrap:wrap;
+    border-bottom:1px solid var(--brand-line);
+    background:linear-gradient(180deg, rgba(198,28,41,.13), transparent);
   }
   .panel-head h2{font-family:var(--serif);font-size:16.5px;font-weight:400}
+  /* Filete vermelho à esquerda do título, como a barra da logomarca. */
+  .panel-head h2::before{
+    content:'';display:inline-block;width:3px;height:15px;margin-right:10px;
+    vertical-align:-2px;border-radius:2px;
+    background:linear-gradient(180deg,var(--brand-bright),var(--brand-deep));
+  }
   .panel-body{padding:20px}
   .panel-body.flush{padding:0}
   .two{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
@@ -141,7 +165,9 @@
   .scroll{overflow-x:auto}
   table{width:100%;border-collapse:collapse;font-size:13.5px}
   th{
-    text-align:left;padding:11px 14px;background:#100C0D;font-size:10.5px;letter-spacing:.13em;
+    text-align:left;padding:11px 14px;
+    background:linear-gradient(180deg, rgba(198,28,41,.13), rgba(198,28,41,.05));
+    font-size:10.5px;letter-spacing:.13em;
     text-transform:uppercase;color:var(--faint);font-weight:600;white-space:nowrap;
     border-bottom:1px solid var(--line);
   }
@@ -191,6 +217,18 @@
   .kv span{text-align:right;word-break:break-all}
   .qr{margin-top:16px;text-align:center}
   .qr img{width:236px;height:236px;background:#fff;padding:10px;border-radius:10px}
+
+  /* ---------------- Formulário da conexão oficial ---------------- */
+  .campos{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+  .campos label{display:block;font-size:12.5px;color:var(--text);font-weight:500}
+  .campos input{
+    width:100%;margin-top:6px;padding:10px 12px;background:#0C0A0B;
+    border:1px solid var(--line);border-radius:9px;color:var(--text);
+    font-family:var(--sans);font-size:13.5px;
+  }
+  .campos input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+  .campos em{display:block;margin-top:5px;font-size:11px;color:var(--faint);font-style:normal;line-height:1.6}
+  @media(max-width:700px){ .campos{grid-template-columns:1fr} }
 
   /* ---------------- Rodapé ---------------- */
   .rodape{
@@ -450,6 +488,45 @@
       </div>
     </div>
     <div class="panel-body flush"><div class="log" id="log"></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2 class="serif">Conexão oficial · API do WhatsApp (Meta)</h2>
+      <button class="btn btn-sm" id="btnAbrirOficial">Configurar</button>
+    </div>
+    <div class="panel-body" id="oficialArea" style="display:none">
+      <p style="font-size:13px;color:var(--muted);line-height:1.75">
+        A conexão atual usa <strong>Baileys</strong>, um cliente não oficial: a sessão é um
+        "aparelho conectado" e o WhatsApp pode derrubá-la a qualquer momento.
+        A <strong>API oficial da Meta</strong> não usa sessão de aparelho — não cai e não pede QR Code.
+        Em troca é <strong>paga por conversa</strong> e exige número verificado no
+        WhatsApp Business Manager.
+      </p>
+
+      <div class="campos">
+        <label>Nome da instância
+          <input type="text" id="ofNome" placeholder="ex.: ma-oficial" autocomplete="off">
+          <em>Só letras, números e hífen. É o identificador na Evolution.</em>
+        </label>
+        <label>Número com DDI
+          <input type="text" id="ofNumero" placeholder="5588981553041" autocomplete="off">
+          <em>O número verificado na Meta, com código do país.</em>
+        </label>
+        <label>WABA / Business ID
+          <input type="text" id="ofBusiness" placeholder="ID da conta do WhatsApp Business" autocomplete="off">
+          <em>Meta Business Manager → Contas do WhatsApp → ID.</em>
+        </label>
+        <label>Token de acesso permanente
+          <input type="password" id="ofToken" placeholder="token do Usuário do Sistema" autocomplete="off">
+          <em>Gerado em Meta Business → Usuários do sistema. Vai direto para a Evolution,
+              não é gravado neste sistema.</em>
+        </label>
+      </div>
+
+      <button class="btn btn-primary" id="btnCriarOficial" style="margin-top:16px">Criar conexão oficial</button>
+      <div id="ofResultado" style="margin-top:14px;font-size:13px"></div>
+    </div>
   </div>
 
   <footer class="rodape">
@@ -947,8 +1024,11 @@ function renderStatus(s) {
     else banner.style.display = 'none';
   }
 
+  const integ = (wa.integration || '').includes('BUSINESS')
+    ? 'Oficial (Meta Cloud API)' : 'Baileys (não oficial)';
   const rows = [
     ['Instância', s.instance],
+    ['Tipo de conexão', integ],
     ['Número', wa.ownerJid ? fone(wa.ownerJid.split('@')[0]) : '—'],
     ['Situação', wa.connected ? 'Conectado' : (wa.error || wa.status || 'Desconectado')],
     ['Webhook', wh.url || '—'],
@@ -1019,6 +1099,41 @@ $('#btnReiniciar').onclick = async () => {
   const j = await r.json();
   toast(r.ok ? 'Instância reiniciada' : 'Falha', r.ok ? 'Aguarde alguns segundos e verifique o status.' : (j.error || 'não foi possível'));
   setTimeout(refresh, 4000);
+};
+
+$('#btnAbrirOficial').onclick = () => {
+  const a = $('#oficialArea');
+  const aberto = a.style.display !== 'none';
+  a.style.display = aberto ? 'none' : 'block';
+  $('#btnAbrirOficial').textContent = aberto ? 'Configurar' : 'Fechar';
+};
+
+$('#btnCriarOficial').onclick = async () => {
+  const corpo = {
+    instanceName: $('#ofNome').value.trim(),
+    number: $('#ofNumero').value.trim(),
+    businessId: $('#ofBusiness').value.trim(),
+    token: $('#ofToken').value.trim()
+  };
+  const out = $('#ofResultado');
+
+  if (!confirm(`Criar a conexão oficial "${corpo.instanceName}" na Evolution?\n\n` +
+              'A conexão atual (Baileys) continua funcionando até você trocar ' +
+              'EVOLUTION_INSTANCE nas variáveis do EasyPanel.')) return;
+
+  out.innerHTML = '<span style="color:var(--faint)">criando…</span>';
+  try {
+    const r = await api('/whatsapp/oficial', { method: 'POST', body: JSON.stringify(corpo) });
+    const j = await r.json();
+    if (!r.ok) { out.innerHTML = `<span style="color:var(--brand-tint)">${esc(j.error || 'falhou')}</span>`; return; }
+    $('#ofToken').value = '';        // não deixa o token na tela
+    out.innerHTML =
+      `<strong style="color:var(--green)">Conexão "${esc(j.instancia)}" criada.</strong><br>` +
+      `<span style="color:var(--muted)">${esc(j.proximoPasso)}</span>`;
+    toast('Conexão oficial criada', j.proximoPasso);
+  } catch (e) {
+    out.innerHTML = `<span style="color:var(--brand-tint)">${esc(String(e.message || e))}</span>`;
+  }
 };
 
 $('#btnSync').onclick = async () => {

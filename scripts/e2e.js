@@ -57,6 +57,8 @@ mock.get('/instance/connect/:i', (_q, r) => r.json(
                         : { base64: 'data:image/png;base64,QUJD', pairingCode: null, code: 'x' }
 ));
 mock.post('/instance/restart/:i', (_q, r) => { restarts++; r.json({ ok: true }); });
+const criadas = [];
+mock.post('/instance/create', (q, r) => { criadas.push(q.body); r.json({ instance: { instanceName: q.body.instanceName } }); });
 const mockServer = mock.listen(MOCK_PORT);
 
 /* ---------------- App sob teste ---------------- */
@@ -534,6 +536,8 @@ try {
   html.includes('WhatsApp desconectado') ? ok('dashboard tem o alarme de desconexão') : no('alarme de desconexão ausente');
   html.includes('qrBanner') && html.includes('Aparelhos conectados')
     ? ok('alarme traz o QR e o passo a passo para reconectar') : no('alarme sem QR/instruções');
+  (html.match(/var\(--brand\)/g) || []).length >= 8
+    ? ok('vermelho da marca presente em todo o painel') : no('vermelho pouco presente');
   html.includes('SX SEVEN XPERTS') && html.includes('32.794.007/0001-19')
     ? ok('rodapé com assinatura e CNPJ da SX') : no('rodapé da SX ausente');
   html.includes('--sx-lima') && html.includes('--sx-turquesa')
@@ -616,6 +620,43 @@ try {
 
     statusMock = 'open';
     await sleep(2600);
+  }
+
+  /* ---------- 12d · Conexão oficial da Meta ---------- */
+  head('12d · Conexão oficial (Meta Cloud API) pelo dashboard');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } };
+    const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    page.includes('API do WhatsApp (Meta)') ? ok('painel da conexão oficial na página') : no('painel da Meta ausente');
+    ['ofNome','ofNumero','ofBusiness','ofToken'].every(id => page.includes(id))
+      ? ok('formulário com os 4 campos (nome, número, WABA, token)') : no('campos incompletos');
+    page.includes('paga por conversa') ? ok('explica o custo e a troca') : no('não explica a troca');
+
+    // campo faltando → recusa com clareza
+    let j = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/oficial`,
+      { method:'POST', ...auth, body: JSON.stringify({ instanceName:'x' }) })).json();
+    /Preencha/.test(j.error || '') ? ok('recusa dados incompletos dizendo o que falta') : no(`erro inesperado: ${j.error}`);
+
+    // completo → cria com integration WHATSAPP-BUSINESS
+    j = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/oficial`,
+      { method:'POST', ...auth,
+        body: JSON.stringify({ instanceName:'ma-oficial', number:'5588981553041',
+                               businessId:'123456789', token:'TOKEN-FALSO-DE-TESTE' }) })).json();
+    j.ok === true ? ok('cria a conexão oficial') : no(`falhou: ${j.error}`);
+    j.proximoPasso?.includes('EVOLUTION_INSTANCE') ? ok('avisa que precisa trocar EVOLUTION_INSTANCE') : no('sem próximo passo');
+
+    const c = criadas[criadas.length - 1] || {};
+    c.integration === 'WHATSAPP-BUSINESS' ? ok('integration = WHATSAPP-BUSINESS') : no(`integration = ${c.integration}`);
+    c.qrcode === false ? ok('não pede QR (oficial não usa aparelho conectado)') : no('pediu QR');
+    c.businessId === '123456789' ? ok('envia o WABA/businessId') : no('businessId errado');
+
+    // o token não pode aparecer na caixa preta
+    const log = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
+    JSON.stringify(log).includes('TOKEN-FALSO-DE-TESTE')
+      ? no('TOKEN VAZOU na caixa preta') : ok('token não aparece na caixa preta');
+
+    (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/oficial`, { method:'POST' })).status === 401
+      ? ok('rota exige token de acesso') : no('rota exposta');
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

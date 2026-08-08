@@ -67,7 +67,9 @@ export async function checkConnection() {
     status: instance.connectionStatus,
     connected: instance.connectionStatus === 'open',
     ownerJid: instance.ownerJid,
-    profileName: instance.profileName
+    profileName: instance.profileName,
+    integration: instance.integration || null,
+    businessId: instance.businessId || null
   };
 }
 
@@ -98,6 +100,28 @@ export async function reconnect() {
     qr: data?.base64 || null,
     pairingCode: data?.pairingCode || null
   };
+}
+
+/**
+ * Cria uma conexão pela API OFICIAL do WhatsApp (Meta Cloud API).
+ *
+ * Diferença que importa: a oficial não usa sessão de aparelho conectado, então
+ * não cai como o Baileys. Em troca é paga por conversa e exige número
+ * verificado no WhatsApp Business Manager.
+ *
+ * O token nunca passa pelo nosso banco — vai direto para a Evolution, que é
+ * quem fala com a Meta.
+ */
+export async function criarInstanciaOficial({ instanceName, number, token, businessId }) {
+  const { data } = await client().post('/instance/create', {
+    instanceName,
+    integration: 'WHATSAPP-BUSINESS',
+    number: String(number).replace(/\D/g, ''),
+    token,
+    businessId,
+    qrcode: false
+  });
+  return data;
 }
 
 /** Reinicia a instância. Resolve estado travado sem precisar do Evolution Manager. */
