@@ -393,9 +393,9 @@ try {
   page.headers.get('cache-control')?.includes('no-store') ? ok('no-store no HTML') : no('sem no-store');
   !html.includes('{{BUILD}}') ? ok('selo de build injetado') : no('selo de build não substituído');
   html.includes('#C61C29') ? ok('paleta da marca aplicada (#C61C29)') : no('paleta da marca ausente');
-  html.includes('/admin/assets/logo.png') ? ok('logo da marca no hero') : no('logo ausente');
+  html.includes('/admin/assets/badge.png') ? ok('badge da marca no hero e no header') : no('badge ausente');
 
-  for (const asset of ['logo.png', 'favicon.png', 'apple-touch-icon.png']) {
+  for (const asset of ['badge.png', 'logo.png', 'favicon.png', 'apple-touch-icon.png']) {
     const r = await fetch(`http://localhost:${APP_PORT}/admin/assets/${asset}`);
     r.ok ? ok(`asset servido: ${asset}`) : no(`asset ${asset}: ${r.status}`);
   }

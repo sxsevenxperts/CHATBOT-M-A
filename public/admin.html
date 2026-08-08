@@ -45,7 +45,13 @@
     border:1px solid var(--line);border-radius:18px;padding:40px 38px 34px;text-align:center;
     box-shadow:0 34px 80px -34px rgba(0,0,0,.9), 0 0 0 1px rgba(198,28,41,.06);
   }
-  .hero-logo{width:212px;max-width:78%;height:auto;margin:0 auto 8px;display:block}
+  /* Badge circular: o disco branco vem embutido na arte, então a marca fica
+     legível sobre o grafite sem precisar de nenhuma moldura extra. */
+  .hero-logo{
+    width:196px;max-width:64%;height:auto;margin:0 auto;display:block;
+    border-radius:50%;
+    box-shadow:0 16px 40px -16px rgba(198,28,41,.5), 0 0 0 1px rgba(198,28,41,.14);
+  }
   .login-card h1{font-family:var(--serif);font-size:23px;font-weight:400;margin-top:14px}
   .login-card .label{margin-top:7px;display:block}
   .rule{height:1px;background:linear-gradient(90deg,transparent,var(--brand-line),transparent);margin:22px 0 4px}
@@ -81,7 +87,11 @@
     padding-bottom:20px;margin-bottom:24px;border-bottom:1px solid var(--line);
   }
   .brand{display:flex;align-items:center;gap:14px}
-  .brand img{height:52px;width:auto;display:block;filter:drop-shadow(0 3px 10px rgba(198,28,41,.34))}
+  .brand img{
+    height:54px;width:54px;display:block;border-radius:50%;
+    box-shadow:0 8px 22px -10px rgba(198,28,41,.5), 0 0 0 1px rgba(198,28,41,.14);
+  }
+  .brand-txt h1 .amp{color:var(--brand-tint)}
   .brand-txt h1{font-family:var(--serif);font-size:20px;font-weight:400}
   .top-right{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 
@@ -234,7 +244,7 @@
 <!-- ============ Login ============ -->
 <section id="login">
   <div class="login-card">
-    <img class="hero-logo" src="/admin/assets/logo.png" alt="M &amp; A Lavagens e Estética">
+    <img class="hero-logo" src="/admin/assets/badge.png" alt="M &amp; A Lavagens e Estética">
     <div class="rule"></div>
     <h1 class="serif">Central de Atendimento</h1>
     <span class="label">Triagem automática · WhatsApp</span>
@@ -251,12 +261,12 @@
 <main id="app">
   <header class="top">
     <div class="brand">
-      <!-- Só o símbolo: a logo com o texto "Lavagens e Estética" fica ilegível
-           nesta altura. A versão completa aparece no login. -->
-      <img src="/admin/assets/mark.png" alt="M &amp; A">
+      <!-- Badge circular. O nome da marca também vem em tipografia: não depende
+           de ler texto dentro de uma imagem pequena. -->
+      <img src="/admin/assets/badge.png" alt="M &amp; A">
       <div class="brand-txt">
-        <h1 class="serif">Central de Atendimento</h1>
-        <span class="label">Triagem automática · WhatsApp</span>
+        <h1 class="serif">M <span class="amp">&amp;</span> A Lavagens e Estética</h1>
+        <span class="label">Central de atendimento · Triagem automática</span>
       </div>
     </div>
     <div class="top-right">
