@@ -3,7 +3,7 @@ import { str, num } from './env.js';
 import express from 'express';
 
 import { initSupabase, keepalive, purgeTestes } from './database.js';
-import { setupWebhook, WEBHOOK_PATH, getInflight } from './webhook.js';
+import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
 import { setupAdmin } from './admin.js';
 import { checkConnection, getWebhook, setWebhook, getConfig } from './evolution.js';
 import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
@@ -150,6 +150,7 @@ function buildApp() {
     ready: state.db.ok && state.whatsapp.ok,
     uptime: Math.round(process.uptime()),
     inflight: getInflight(),
+    filasPorTelefone: filasAbertas(),
     config: {
       rearmeHoras: num('REARM_HOURS', 24),
       delayMs: [num('REPLY_DELAY_MIN_MS', 3000), num('REPLY_DELAY_MAX_MS', 5000)],
