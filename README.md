@@ -53,6 +53,20 @@ O extrator reconhece:
 
 Nos menus, o cliente pode responder com o número **ou escrever do seu jeito**.
 
+### Quando a conexão cai no meio de uma conversa
+
+Quem escreveu durante a queda não recebeu resposta e desistiria em silêncio. Ao
+voltar, o sistema pede desculpa e **repete a pergunta que estava pendente** —
+não a abertura inteira:
+
+> Oi! Tivemos uma instabilidade aqui e sua mensagem não chegou até mim.
+> Retomando: qual é o modelo do veículo?
+
+Conservador de propósito: só depois de queda de `RECOVERY_MIN_MINUTES` (5 min),
+no máximo `RECOVERY_MAX` (20) por vez, 4 s entre envios, **nunca duas vezes para
+a mesma pessoa** e **nunca para quem já está com a atendente**. Há também o
+botão **Retomar conversas** no painel Conexão, para acionar na mão.
+
 ### Comportamentos que importam
 
 - **O nome é perguntado**, não deduzido do perfil. O `pushName` do WhatsApp vai
@@ -254,7 +268,7 @@ vem com o conserto.
 npm test
 ```
 
-**178 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**191 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -307,6 +321,7 @@ O que existe é redução de risco e recuperação rápida:
 | Monitor a cada 60 s | Antes, o status era medido só no boot: caiu às 09:45 e o `/health` seguiu dizendo `ready: true` por horas |
 | Reconexão automática | Queda transitória volta sozinha, sem ninguém olhar |
 | Alarme com QR no dashboard | Quando precisa de QR, ele aparece no próprio alerta com o passo a passo |
+| **Retomada automática** | Ao voltar de uma queda longa, o bot pede desculpa e repete a pergunta pendente para quem ficou sem resposta — o lead não se perde em silêncio |
 | Botões Conectar / Reiniciar | Religar pelo dashboard, sem abrir o Evolution Manager |
 | Painel da conexão oficial | Migrar para a Cloud API da Meta pelo próprio dashboard |
 | **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
@@ -426,6 +441,7 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
 | `POST` | `/admin/api/whatsapp/oficial` | Cria conexão pela Cloud API da Meta |
+| `POST` | `/admin/api/retomar` | Retoma conversas paradas (`{horas}`) |
 | `GET` | `/admin/api/build` | Selo do build |
 
 `de` e `ate` são datas `YYYY-MM-DD` **no fuso da loja** (`TIMEZONE`); `ate`
@@ -457,4 +473,5 @@ verificação — não reintroduza.
 | Data local comparada com limite UTC | Mensagem das 22h caía no dia seguinte | Sobral é UTC−3: 00:00 local é 03:00Z |
 | Sem fila por telefone | "oi" + nome juntos → boas-vindas duas vezes e nome perdido | As duas mensagens liam a mesma sessão em paralelo |
 | Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
+| Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |

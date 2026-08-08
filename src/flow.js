@@ -1,7 +1,10 @@
 import './env.js';
 import { str, num } from './env.js';
 import { sendText, sendPresence } from './evolution.js';
-import { getSession, saveSession, saveTriage, logMessage } from './database.js';
+import {
+  getSession, saveSession, saveTriage, logMessage,
+  getSessoesInterrompidas, marcarRetomada
+} from './database.js';
 import {
   INTENTS, CATEGORIES, SERVICES, NEEDS, LEVELS, PERIODS, DATES,
   NEED_TO_SERVICE, SERVICE_TO_LEVEL
@@ -239,6 +242,82 @@ function pergunta(step, d) {
       warn('flow.perguntaSemCaso', { passo: step });
       return 'Como podemos ajudar você hoje?\n\n' + menu(INTENTS) + RODAPE_MENU;
   }
+}
+
+/**
+ * Só a pergunta pendente, sem o preâmbulo de boas-vindas.
+ *
+ * Usada ao retomar depois de uma queda: repetir o texto inteiro de abertura
+ * soaria como se a conversa tivesse sido esquecida.
+ */
+function perguntaCurta(step, d) {
+  const carro = apelidoVeiculo(d.vehicle);
+  switch (step) {
+    case 'ask_name':     return 'qual é o seu nome?';
+    case 'ask_intent':   return `sobre o que você quer falar?\n\n${menu(INTENTS)}`;
+    case 'ask_category': return `qual é o tipo do seu veículo?\n\n${menu(CATEGORIES)}`;
+    case 'ask_model':    return 'qual é o modelo do veículo?';
+    case 'ask_service':  return `o que você está buscando para o seu *${carro}*?\n\n${menu(SERVICES)}`;
+    case 'ask_need':     return `o que mais está incomodando você no veículo?\n\n${menu(NEEDS)}`;
+    case 'ask_level':    return `qual resultado você está buscando para o seu *${carro}*?\n\n${menu(LEVELS_MENU)}`;
+    case 'ask_period':   return `qual período seria melhor para você?\n\n${menu(PERIODS_MENU)}`;
+    case 'ask_date':     return `para quando você gostaria?\n\n${menu(DATES)}`;
+    case 'confirm':      return `posso encaminhar seu atendimento para nossa atendente?\n\n${menu(CONFIRM)}`;
+    default:             return `sobre o que você quer falar?\n\n${menu(INTENTS)}`;
+  }
+}
+
+/**
+ * Retoma as conversas interrompidas por uma queda de conexão.
+ *
+ * Enquanto o WhatsApp está fora, a mensagem do cliente não chega — ele fica
+ * esperando resposta que nunca vem e o lead se perde em silêncio. Ao voltar,
+ * o sistema pede desculpa e repete a pergunta que estava pendente.
+ *
+ * Conservador de propósito: só depois de queda longa, poucos por vez, com
+ * intervalo entre envios e nunca duas vezes para a mesma pessoa.
+ */
+export async function retomarConversas({ caiuEm = null, ultimasHoras = null, limite = null }) {
+  const max = limite ?? num('RECOVERY_MAX', 20);
+
+  // Dois usos, janelas diferentes:
+  //  - automático: quem falou ANTES da queda e ficou sem resposta
+  //  - manual: qualquer conversa parada no meio, nas últimas N horas
+  const alvo = caiuEm
+    ? { desde: new Date(Date.now() - REARM_HOURS() * 3600_000).toISOString(),
+        ate: caiuEm, referencia: caiuEm }
+    : { desde: new Date(Date.now() - (ultimasHoras || 6) * 3600_000).toISOString(),
+        ate: null, referencia: new Date(Date.now() - 3600_000).toISOString() };
+
+  const sessoes = await getSessoesInterrompidas({ ...alvo, limite: max });
+
+  if (!sessoes.length) {
+    info('retomada.nadaAFazer', { desde: alvo.desde, ate: alvo.ate });
+    return { retomadas: 0, telefones: [] };
+  }
+
+  const telefones = [];
+  for (const sessao of sessoes) {
+    const d = { ...(sessao.data || {}), phone: sessao.phone };
+    const passo = PASSOS.has(sessao.step) ? sessao.step : proximoPasso(d);
+
+    const texto =
+      'Oi! Tivemos uma instabilidade aqui e sua mensagem não chegou até mim.\n\n' +
+      `Retomando: ${perguntaCurta(passo, d)}`;
+
+    try {
+      await reply(sessao.phone, texto);
+      await marcarRetomada(sessao.phone);
+      telefones.push(sessao.phone);
+      info('retomada.enviada', { de: sessao.phone, passo, cliente: d.name || '—' });
+      await sleep(4000);   // espaça os envios: rajada derruba a sessão de novo
+    } catch (e) {
+      warn('retomada.falhou', { de: sessao.phone, erro: e.message });
+    }
+  }
+
+  info('retomada.concluida', { retomadas: telefones.length, janela: caiuEm ? 'pós-queda' : `${ultimasHoras || 6}h` });
+  return { retomadas: telefones.length, telefones };
 }
 
 /* ---------------- Interpretação da resposta ---------------- */

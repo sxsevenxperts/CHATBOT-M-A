@@ -15,6 +15,7 @@ import {
   reconnect, restartInstance, criarInstanciaOficial
 } from './evolution.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
+import { retomarConversas } from './flow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -225,6 +226,19 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
       proximoPasso: `Troque EVOLUTION_INSTANCE para "${instanceName}" nas variáveis do EasyPanel e faça redeploy.`,
       resultado
     });
+  }));
+
+  /**
+   * Retoma na mão as conversas interrompidas.
+   *
+   * O sistema já faz isso sozinho quando a conexão volta de uma queda longa.
+   * O botão existe para o caso de a atendente perceber antes, ou de a queda
+   * ter sido curta demais para acionar o automático.
+   */
+  api.post('/retomar', wrap(async (req, res) => {
+    const horas = Math.min(Math.max(Number(req.body?.horas) || 6, 1), 48);
+    const r = await retomarConversas({ ultimasHoras: horas });
+    res.json({ ok: true, ...r, janelaHoras: horas });
   }));
 
   /** Reinicia a instância, para estado travado. */

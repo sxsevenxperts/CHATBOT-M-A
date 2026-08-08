@@ -58,6 +58,46 @@ export async function resetSession(phone) {
   if (error) throw error;
 }
 
+/**
+ * Conversas que estavam no meio do fluxo quando a conexão caiu.
+ *
+ * Critérios, todos necessários para não incomodar quem não deve:
+ *   - ainda não passou para a atendente (handed_off = false)
+ *   - não é teste
+ *   - última atividade ANTES do início da queda — quem escreveu depois já foi
+ *     atendido normalmente
+ *   - dentro da janela de rearme; conversa mais velha que isso já morreu
+ *   - ainda não recebeu a mensagem de retomada desta queda
+ */
+export async function getSessoesInterrompidas({
+  desde, ate = null, limite = 20, referencia = null
+}) {
+  // Isolamento simétrico: produção ignora teste, teste ignora produção.
+  // Sem isso, rodar a suíte mexia em sessão de cliente real — aconteceu.
+  const emTeste = process.env.NODE_ENV === 'test';
+
+  let q = db().from('bot_sessions').select('*')
+    .eq('handed_off', false)
+    .eq('is_test', emTeste)
+    .gt('updated_at', desde);
+
+  if (ate) q = q.lt('updated_at', ate);
+
+  const { data, error } = await q.order('updated_at', { ascending: false }).limit(limite);
+  if (error) throw error;
+
+  // Nunca duas vezes pela mesma queda.
+  const corte = referencia || desde;
+  return (data || []).filter(s => !s.recovered_at || s.recovered_at < corte);
+}
+
+export async function marcarRetomada(phone) {
+  const { error } = await db().from('bot_sessions')
+    .update({ recovered_at: new Date().toISOString() })
+    .eq('phone', phone);
+  if (error) throw error;
+}
+
 /* ---------------- Mensagens ---------------- */
 
 export async function logMessage(phone, direction, body) {

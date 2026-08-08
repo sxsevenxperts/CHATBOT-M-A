@@ -70,6 +70,7 @@ const app = spawn(process.execPath, ['src/index.js'], {
     PUBLIC_URL: `http://localhost:${APP_PORT}`,
     REPLY_DELAY_MIN_MS: '250', REPLY_DELAY_MAX_MS: '350',
     KEEPALIVE_HOURS: '0', REARM_HOURS: '24', MONITOR_SECONDS: '1',
+    RECOVERY_MIN_MINUTES: '0', RECOVERY_MAX: '5',
     TEST_PHONES: [A, B, C, '5588000000094'].join(','),
     NODE_ENV: 'test'
   },
@@ -657,6 +658,66 @@ try {
 
     (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/oficial`, { method:'POST' })).status === 401
       ? ok('rota exige token de acesso') : no('rota exposta');
+  }
+
+  /* ---------- 12e · Retomada depois da queda ---------- */
+  head('12e · Retoma conversas interrompidas por queda de conexão');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } };
+    const P = '5588000000801';   // ficou parado no meio do fluxo
+    const Q = '5588000000802';   // já foi para a atendente: NÃO pode ser incomodado
+    // Isolamento: a retomada em NODE_ENV=test só olha sessões is_test = true.
+
+    for (const t of ['messages','bot_sessions','triages']) {
+      await sb.from(t).delete().in('phone', [P, Q]);
+    }
+    // Ambos com atividade antiga, como se a conexão tivesse caído depois.
+    const antigo = new Date(Date.now() - 3600_000).toISOString();
+    await sb.from('bot_sessions').insert([
+      { phone: P, step: 'ask_vehicle', data: { phone: P, name: 'Ana', intent: 'lavar', category: 'SUV' },
+        handed_off: false, is_test: true, updated_at: antigo },
+      { phone: Q, step: 'done', data: { phone: Q, name: 'Bruno' },
+        handed_off: true, is_test: true, updated_at: antigo }
+    ]);
+
+    const antes = sent.length;
+    const r = await (await fetch(`http://localhost:${APP_PORT}/admin/api/retomar`,
+      { method: 'POST', ...auth, body: JSON.stringify({ horas: 6 }) })).json();
+
+    r.ok === true ? ok('rota de retomada responde') : no(`retomada falhou: ${r.error}`);
+    r.telefones?.includes(P) ? ok('retomou quem ficou parado no meio do fluxo') : no(`não retomou ${P}`);
+    r.telefones?.every(t => t.startsWith('55880000')) ? ok('em teste, só toca sessões de teste') : no(`vazou para produção: ${r.telefones}`);
+    !r.telefones?.includes(Q) ? ok('NÃO incomodou quem já está com a atendente') : no('mandou mensagem para quem já foi atendido');
+
+    const msg = sent.slice(antes).find(x => x.number === P)?.text || '';
+    /instabilidade/.test(msg) ? ok('pede desculpa pela instabilidade') : no('sem desculpa', msg);
+    /Retomando/.test(msg) ? ok('sinaliza que está retomando') : no('não diz que retoma');
+    /modelo do veículo/i.test(msg) ? ok('repete a pergunta PENDENTE (o modelo), não o início') : no('repetiu a pergunta errada', msg);
+    !/Bem-vindo/.test(msg) ? ok('não repete as boas-vindas inteiras') : no('repetiu a abertura');
+
+    // Não pode mandar duas vezes para a mesma pessoa
+    const antes2 = sent.length;
+    const r2 = await (await fetch(`http://localhost:${APP_PORT}/admin/api/retomar`,
+      { method: 'POST', ...auth, body: JSON.stringify({ horas: 6 }) })).json();
+    sent.slice(antes2).filter(x => x.number === P).length === 0
+      ? ok('não repete a retomada para quem já recebeu') : no('mandou a retomada duas vezes');
+
+    const sessP = await sessaoDe(P);
+    sessP?.recovered_at ? ok('marca recovered_at na sessão') : no('sem recovered_at');
+    sessP?.step === 'ask_vehicle' ? ok('não perdeu o passo do fluxo') : no(`passo virou ${sessP?.step}`);
+
+    // O cliente responde e o fluxo continua de onde estava
+    const antes3 = sent.length;
+    await diz('Compass', { de: P, pushName: 'Ana' });
+    const cont = sent.slice(antes3).find(x => x.number === P)?.text || '';
+    /o que você está buscando/.test(cont) ? ok('cliente responde e o fluxo segue para a etapa seguinte') : no('fluxo não seguiu', cont);
+
+    const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    page.includes('btnRetomar') ? ok('botão "Retomar conversas" no dashboard') : no('botão de retomada ausente');
+
+    for (const t of ['messages','bot_sessions','triages']) {
+      await sb.from(t).delete().in('phone', [P, Q]);
+    }
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

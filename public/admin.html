@@ -469,6 +469,7 @@
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-sm btn-primary" id="btnConectar">Conectar / Gerar QR</button>
           <button class="btn btn-sm" id="btnReiniciar">Reiniciar instância</button>
+          <button class="btn btn-sm" id="btnRetomar" title="Pede desculpa e repete a pergunta pendente para quem ficou sem resposta">Retomar conversas</button>
           <button class="btn btn-sm" id="btnSync">Sincronizar webhook</button>
         </div>
       </div>
@@ -1134,6 +1135,18 @@ $('#btnCriarOficial').onclick = async () => {
   } catch (e) {
     out.innerHTML = `<span style="color:var(--brand-tint)">${esc(String(e.message || e))}</span>`;
   }
+};
+
+$('#btnRetomar').onclick = async () => {
+  if (!confirm('Retomar as conversas interrompidas das últimas 6 horas?\n\n' +
+              'Envia uma desculpa e repete a pergunta pendente para quem ficou sem resposta.\n' +
+              'Quem já foi atendido pela equipe não é incomodado.')) return;
+  const r = await api('/retomar', { method: 'POST', body: JSON.stringify({ horas: 6 }) });
+  const j = await r.json();
+  toast(r.ok ? 'Retomada' : 'Falha',
+        r.ok ? (j.retomadas ? `${j.retomadas} conversa(s) retomada(s).` : 'Nenhuma conversa pendente.')
+             : (j.error || 'não foi possível'));
+  refresh();
 };
 
 $('#btnSync').onclick = async () => {
