@@ -3,7 +3,8 @@ import { str, num } from './env.js';
 import express from 'express';
 
 import {
-  initSupabase, keepalive, purgeTestes, registrarEventoConexao, resumoEntrega
+  initSupabase, keepalive, purgeTestes, registrarEventoConexao, resumoEntrega,
+  ultimoVereditoEnvio
 } from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
 import { retomarConversas } from './flow.js';
@@ -64,6 +65,22 @@ async function initDependencies() {
   } catch (e) {
     state.db.error = e.message;
     falha('boot.supabaseFalhou', e);
+  }
+
+  // O freio mora em memória. Sem esta pergunta, cada deploy religaria o envio
+  // num canal que o WhatsApp está recusando — e o bot voltaria a insistir.
+  if (state.db.ok && process.env.NODE_ENV !== 'test') {
+    try {
+      const v = await ultimoVereditoEnvio({ horas: 24 });
+      if (v?.recusado) {
+        engatarFreio(`última mensagem com veredito foi RECUSADA pelo WhatsApp (${v.em})`);
+        warn('boot.freioHerdado', { desde: v.em, acao: 'atenda manualmente; teste o envio em /admin' });
+      } else if (v) {
+        info('boot.envioOk', { ultimoStatus: v.status, em: v.em });
+      }
+    } catch (e) {
+      warn('boot.vereditoEnvioFalhou', { erro: e.message });
+    }
   }
 
   // Evolution
