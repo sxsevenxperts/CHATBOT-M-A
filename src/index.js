@@ -4,6 +4,7 @@ import express from 'express';
 
 import { initSupabase, keepalive, purgeTestes } from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
+import { retomarConversas } from './flow.js';
 import { setupAdmin } from './admin.js';
 import { checkConnection, getWebhook, setWebhook, getConfig, reconnect } from './evolution.js';
 import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
@@ -137,6 +138,18 @@ function startConnectionMonitor() {
       } else if (!antes && wa.connected) {
         const min = caiuEm ? Math.round((Date.now() - new Date(caiuEm).getTime()) / 60000) : 0;
         info('whatsapp.voltou', { numero: wa.ownerJid, foraDoArMin: min, tentativas });
+
+        // Quem escreveu durante a queda não recebeu resposta e some em
+        // silêncio. Retoma pedindo desculpa e repetindo a pergunta pendente.
+        // Só depois de queda longa: um piscar de 30s não justifica incomodar.
+        const minimo = num('RECOVERY_MIN_MINUTES', 5);
+        if (caiuEm && min >= minimo) {
+          retomarConversas({ caiuEm })
+            .then(r => r.retomadas && info('retomada.apósQueda', { retomadas: r.retomadas, foraDoArMin: min }))
+            .catch(e => falha('retomada.erro', e));
+        } else if (caiuEm) {
+          info('retomada.dispensada', { foraDoArMin: min, minimoMin: minimo });
+        }
       }
 
       // Reconexão automática: queda transitória se resolve sem ninguém olhar.
