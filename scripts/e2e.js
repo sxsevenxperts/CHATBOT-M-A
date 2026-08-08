@@ -51,6 +51,12 @@ mock.get('/webhook/find/:i', (_q, r) => r.json({
   enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`, events: ['MESSAGES_UPSERT']
 }));
 mock.post('/webhook/set/:i', (q, r) => r.json({ ...q.body.webhook }));
+let restarts = 0;
+mock.get('/instance/connect/:i', (_q, r) => r.json(
+  statusMock === 'open' ? { base64: null, pairingCode: null, code: null }
+                        : { base64: 'data:image/png;base64,QUJD', pairingCode: null, code: 'x' }
+));
+mock.post('/instance/restart/:i', (_q, r) => { restarts++; r.json({ ok: true }); });
 const mockServer = mock.listen(MOCK_PORT);
 
 /* ---------------- App sob teste ---------------- */
@@ -580,6 +586,36 @@ try {
     const logInfo = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
     (logInfo.eventos || []).some(e => e.event === 'whatsapp.voltou')
       ? ok('caixa preta registra a reconexão') : no('reconexão não registrada');
+  }
+
+  /* ---------- 12c · Conectar pelo dashboard ---------- */
+  head('12c · Conectar o WhatsApp pelo próprio dashboard');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } };
+    const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    page.includes('Conectar / Gerar QR') ? ok('botão "Conectar / Gerar QR" na página') : no('botão de conectar ausente');
+    page.includes('btnReiniciar') ? ok('botão de reiniciar a instância') : no('botão de reiniciar ausente');
+
+    // Conectado: não deve devolver QR
+    statusMock = 'open';
+    let j = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/conectar`, { method:'POST', ...auth })).json();
+    j.ok === true ? ok('rota de conectar responde') : no('rota de conectar falhou');
+    j.precisaQr === false ? ok('conectado: não pede QR') : no('pediu QR estando conectado');
+
+    // Desconectado: devolve o QR para escanear na tela
+    statusMock = 'connecting';
+    j = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/conectar`, { method:'POST', ...auth })).json();
+    j.precisaQr === true ? ok('desconectado: devolve QR') : no('não devolveu QR');
+    j.qr ? ok('QR vem em base64, pronto para renderizar') : no('QR ausente');
+
+    const rr = await (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/reiniciar`, { method:'POST', ...auth })).json();
+    rr.ok === true ? ok('rota de reiniciar a instância responde') : no('reiniciar falhou');
+
+    (await fetch(`http://localhost:${APP_PORT}/admin/api/whatsapp/conectar`, { method:'POST' })).status === 401
+      ? ok('rotas de conexão exigem token') : no('rotas de conexão expostas');
+
+    statusMock = 'open';
+    await sleep(2600);
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

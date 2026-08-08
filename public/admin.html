@@ -428,9 +428,14 @@
     <div class="panel">
       <div class="panel-head">
         <h2 class="serif">Conexão</h2>
-        <button class="btn btn-sm" id="btnSync">Sincronizar webhook</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm btn-primary" id="btnConectar">Conectar / Gerar QR</button>
+          <button class="btn btn-sm" id="btnReiniciar">Reiniciar instância</button>
+          <button class="btn btn-sm" id="btnSync">Sincronizar webhook</button>
+        </div>
       </div>
       <div class="panel-body" id="conn"></div>
+      <div class="panel-body" id="conectarArea" style="display:none;border-top:1px solid var(--line)"></div>
     </div>
   </div>
 
@@ -965,6 +970,56 @@ function renderStatus(s) {
     }).catch(() => {});
   }
 }
+
+/** Mostra o QR dentro do painel Conexão, com o passo a passo. */
+function mostrarQr(q, area) {
+  const passos =
+    '<ol style="margin:0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.9">' +
+    '<li>No celular <strong>(88) 98155-3041</strong>, abra o WhatsApp</li>' +
+    '<li>Toque em <strong>⋮ → Aparelhos conectados</strong></li>' +
+    '<li>Toque em <strong>Conectar um aparelho</strong></li>' +
+    '<li>Aponte a câmera para este código</li>' +
+    '</ol>';
+
+  if (q.qr || q.base64) {
+    const src = q.qr || q.base64;
+    area.innerHTML =
+      '<span class="label">Escaneie para conectar</span>' +
+      '<div class="qr-banner" style="margin-top:12px">' +
+      `<img src="${src.startsWith('data:') ? src : 'data:image/png;base64,' + src}" alt="QR Code">` +
+      passos + '</div>' +
+      (q.pairingCode ? `<div style="margin-top:10px;font-size:13px">Ou use o código de pareamento: <strong>${esc(q.pairingCode)}</strong></div>` : '');
+  } else {
+    area.innerHTML =
+      '<span class="label">Conexão</span>' +
+      '<p style="font-size:13px;color:var(--muted);margin-top:6px">' +
+      'A instância já está conectada ou religando sozinha — nenhum QR Code necessário agora.</p>';
+  }
+  area.style.display = 'block';
+}
+
+$('#btnConectar').onclick = async () => {
+  const area = $('#conectarArea');
+  area.style.display = 'block';
+  area.innerHTML = '<span class="label">Conexão</span><p style="font-size:13px;color:var(--faint);margin-top:6px">gerando…</p>';
+  try {
+    const r = await api('/whatsapp/conectar', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok) { area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(j.error || 'falhou')}</p>`; return; }
+    mostrarQr(j, area);
+    refresh();
+  } catch (e) {
+    area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(String(e.message || e))}</p>`;
+  }
+};
+
+$('#btnReiniciar').onclick = async () => {
+  if (!confirm('Reiniciar a instância do WhatsApp?\n\nA conexão cai por alguns segundos. Use quando estiver travada.')) return;
+  const r = await api('/whatsapp/reiniciar', { method: 'POST' });
+  const j = await r.json();
+  toast(r.ok ? 'Instância reiniciada' : 'Falha', r.ok ? 'Aguarde alguns segundos e verifique o status.' : (j.error || 'não foi possível'));
+  setTimeout(refresh, 4000);
+};
 
 $('#btnSync').onclick = async () => {
   const r = await api('/webhook/sync', { method:'POST' });

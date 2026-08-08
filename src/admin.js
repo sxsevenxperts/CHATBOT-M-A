@@ -11,7 +11,8 @@ import {
   purgeTestes, db, resetSession
 } from './database.js';
 import {
-  listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig
+  listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
+  reconnect, restartInstance
 } from './evolution.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 
@@ -184,6 +185,25 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   api.get('/instances', wrap(async (_req, res) => res.json(await listInstances())));
 
   api.get('/qr', wrap(async (_req, res) => res.json(await getQrCode())));
+
+  /**
+   * Conectar/religar o WhatsApp pelo próprio dashboard.
+   *
+   * Existe para que ninguém precise abrir o Evolution Manager para religar o
+   * atendimento — o QR aparece aqui e reconectar leva segundos.
+   */
+  api.post('/whatsapp/conectar', wrap(async (_req, res) => {
+    const r = await reconnect();
+    info('admin.whatsappConectar', { precisaQr: r.precisaQr });
+    res.json({ ok: true, ...r });
+  }));
+
+  /** Reinicia a instância, para estado travado. */
+  api.post('/whatsapp/reiniciar', wrap(async (_req, res) => {
+    const r = await restartInstance();
+    info('admin.whatsappReiniciar', {});
+    res.json({ ok: true, resultado: r });
+  }));
 
   /**
    * Filtros compartilhados por /triages, /stats e /messages.
