@@ -158,11 +158,46 @@ if (process.env.SUPABASE_URL && supaKey) {
     warn('nenhuma mensagem enviada nas últimas 6h', 'sem dado para julgar a entrega');
   } else {
     const entregues = data.filter(m => ['DELIVERY_ACK', 'READ', 'PLAYED'].includes(m.status)).length;
+    const rejeitadas = data.filter(m => m.status === 'ERROR').length;
+    const naoEnviadas = data.filter(m => m.status === 'BLOQUEADO').length;
     const semAck = data.filter(m => !m.status || m.status === 'PENDING').length;
-    console.log(`     ${data.length} enviadas · ${entregues} confirmadas · ${semAck} sem confirmação`);
+    console.log(`     ${data.length} enviadas · ${entregues} confirmadas · ${rejeitadas} recusadas · ` +
+                `${naoEnviadas} barradas pelo freio · ${semAck} sem confirmação`);
+    if (rejeitadas > 0) {
+      bad(`${rejeitadas} mensagem(ns) RECUSADAS pelo WhatsApp (ACK ERROR)`,
+          'recusa não é demora: repareaar não resolve (testado em 08/08/2026). ' +
+          'Atenda manualmente e use "Testar envio" no /admin antes de religar');
+    }
+    if (naoEnviadas > 0) {
+      warn(`${naoEnviadas} resposta(s) não saíram por causa do freio de envio`,
+           'o bot está mudo de propósito — libere no /admin depois de um teste entregue');
+    }
     if (entregues > 0) ok('há confirmação de entrega — o envio está chegando');
-    else bad('NENHUMA confirmação de entrega nas últimas 6h',
+    else if (!rejeitadas) bad('NENHUMA confirmação de entrega nas últimas 6h',
              'a Evolution aceita e o WhatsApp engole; use "Desconectar e pareear" no /admin');
+  }
+}
+
+/* ---------- 6. Freio de envio ---------- */
+head('6 · Freio de envio (o bot para quando o WhatsApp recusa)');
+
+const alvo = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+if (!alvo) {
+  warn('PUBLIC_URL não definida', 'sem ela não consigo consultar o estado do freio em produção');
+} else {
+  try {
+    const r = await fetch(`${alvo}/health`, { signal: AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if (!j.freio) {
+      bad('a versão em produção não expõe o freio de envio', 'faça o deploy da última versão');
+    } else if (j.freio.bloqueado) {
+      bad(`freio ENGATADO desde ${j.freio.desde}: ${j.freio.motivo}`,
+          `${j.freio.naoEnviadas || 0} resposta(s) não saíram — atenda manualmente e teste o envio no /admin`);
+    } else {
+      ok(`freio liberado (limite: ${j.freio.limite} recusas seguidas)`);
+    }
+  } catch (e) {
+    warn(`não consegui consultar ${alvo}/health`, e.message);
   }
 }
 

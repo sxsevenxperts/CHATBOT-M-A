@@ -1,5 +1,6 @@
 import { handleMessage } from './flow.js';
 import { atualizarStatusMensagem } from './database.js';
+import { registrarRejeicao, registrarEntrega } from './freio.js';
 import { info, warn, falha } from './recorder.js';
 import { serializar, filasAbertas } from './serial.js';
 
@@ -92,8 +93,14 @@ export function setupWebhook(app) {
           const waId = it?.keyId || it?.key?.id || it?.id || null;
           const st = it?.status || it?.update?.status || null;
           if (!waId || !st) continue;
-          const achou = await atualizarStatusMensagem(waId, String(st).toUpperCase());
-          info('webhook.ack', { id: waId, status: st, casou: achou });
+          const status = String(st).toUpperCase();
+          const achou = await atualizarStatusMensagem(waId, status);
+          info('webhook.ack', { id: waId, status, casou: achou });
+
+          // ERROR é recusa. Insistir depois de recusa foi o que transformou
+          // uma oscilação em horas de silêncio: aqui o envio para sozinho.
+          if (status === 'ERROR') registrarRejeicao(waId);
+          else if (['DELIVERY_ACK', 'READ', 'PLAYED'].includes(status)) registrarEntrega(waId);
         }
         return;
       }

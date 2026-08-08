@@ -8,12 +8,15 @@ import express from 'express';
 
 import {
   getTriages, updateTriageStatus, getMessages, getStats, contarTestes,
-  purgeTestes, db, resetSession, resumoConexao, resumoEntrega
+  purgeTestes, db, resetSession, resumoConexao, resumoEntrega,
+  logMessage, statusPorWaId
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
-  reconnect, restartInstance, criarInstanciaOficial, logoutEPareaerDeNovo
+  reconnect, restartInstance, criarInstanciaOficial, logoutEPareaerDeNovo,
+  sendText
 } from './evolution.js';
+import { ver as verFreio, liberar as liberarFreio, bloquear as bloquearFreio, registrarEntrega } from './freio.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 import { retomarConversas } from './flow.js';
 
@@ -140,7 +143,8 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
       baseUrl: cfg.baseUrl, instance: cfg.instance,
       publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request',
       boot: { db: state.db, env: state.env, whatsapp: state.whatsapp },
-      entrega: state.entrega
+      entrega: state.entrega,
+      freio: verFreio()
     };
 
     try {
@@ -348,7 +352,65 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   /** As mensagens estão sendo ENTREGUES? Aceite não é entrega. */
   api.get('/entrega', wrap(async (req, res) => {
     const minutos = Math.min(Math.max(Number(req.query.minutos) || 30, 5), 1440);
-    res.json(await resumoEntrega({ minutos }));
+    res.json({ ...(await resumoEntrega({ minutos })), freio: verFreio() });
+  }));
+
+  /* ---------- freio de envio ---------- */
+
+  api.get('/envio/freio', wrap(async (_req, res) => res.json(verFreio())));
+
+  /** Liberação manual — deliberadamente manual: religar sozinho agrava. */
+  api.post('/envio/liberar', wrap(async (_req, res) => {
+    res.json({ ok: true, freio: liberarFreio('dashboard') });
+  }));
+
+  api.post('/envio/bloquear', wrap(async (req, res) => {
+    const motivo = String(req.body?.motivo || 'bloqueio manual pela dashboard').slice(0, 200);
+    res.json({ ok: true, freio: bloquearFreio(motivo) });
+  }));
+
+  /**
+   * Sonda de envio: UMA mensagem, com espera pelo ACK real.
+   *
+   * É o único jeito honesto de saber se o canal voltou — e o único envio que
+   * ignora o freio. Se o ACK confirmar entrega, o freio sai sozinho.
+   */
+  api.post('/envio/sonda', wrap(async (req, res) => {
+    const numero = String(req.body?.numero || '').replace(/\D/g, '');
+    if (numero.length < 10) return res.status(400).json({ error: 'Informe o número com DDD' });
+    const texto = String(req.body?.texto || 'Teste de envio do sistema M & A. Pode ignorar.').slice(0, 300);
+
+    const r = await sendText(numero, texto);
+    await logMessage(numero, 'out', texto, r?.waId || null, r?.status || null);
+    info('envio.sonda', { aceito: !!r?.waId, status: r?.status || null });
+
+    // Espera o ACK: aceite (PENDING) não prova nada.
+    const limite = Date.now() + Math.max(2000, Number(process.env.SONDA_TIMEOUT_MS) || 25_000);
+    let status = r?.status || null;
+    while (Date.now() < limite) {
+      await new Promise(s => setTimeout(s, 2500));
+      const atual = await statusPorWaId(r?.waId);
+      if (atual?.status) {
+        status = atual.status;
+        if (['DELIVERY_ACK', 'READ', 'PLAYED', 'ERROR'].includes(status)) break;
+      }
+    }
+
+    const entregue = ['DELIVERY_ACK', 'READ', 'PLAYED'].includes(status);
+    if (entregue) registrarEntrega(r?.waId);
+
+    res.json({
+      waId: r?.waId || null,
+      status,
+      entregue,
+      rejeitada: status === 'ERROR',
+      freio: verFreio(),
+      veredito: entregue
+        ? 'Entregue. O canal está de pé e o freio foi liberado.'
+        : status === 'ERROR'
+          ? 'REJEITADA pelo WhatsApp. O número continua impedido de enviar — não repareie de novo.'
+          : 'Sem confirmação no tempo de espera. Aceito e não confirmado: trate como não entregue.'
+    });
   }));
 
   /** Caixa preta: últimos eventos do sistema, para diagnosticar sem o console. */
