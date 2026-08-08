@@ -2,7 +2,7 @@ import './env.js';                 // carrega o .env antes de tudo
 import { str, num } from './env.js';
 import express from 'express';
 
-import { initSupabase, keepalive, purgeTestes } from './database.js';
+import { initSupabase, keepalive, purgeTestes, registrarEventoConexao } from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
 import { retomarConversas } from './flow.js';
 import { setupAdmin } from './admin.js';
@@ -135,9 +135,17 @@ function startConnectionMonitor() {
         falha('whatsapp.caiu', new Error(`status ${wa.status}`), {
           acao: 'tentando reconectar; se pedir QR, escaneie em /admin → Conexão'
         });
+        registrarEventoConexao({
+          instance: wa.name, event: 'caiu', status: wa.status,
+          detalhe: 'detectado pelo monitor'
+        }).catch(() => {});
       } else if (!antes && wa.connected) {
         const min = caiuEm ? Math.round((Date.now() - new Date(caiuEm).getTime()) / 60000) : 0;
         info('whatsapp.voltou', { numero: wa.ownerJid, foraDoArMin: min, tentativas });
+        registrarEventoConexao({
+          instance: wa.name, event: 'voltou', status: wa.status,
+          foraMin: min, tentativas
+        }).catch(() => {});
 
         // Quem escreveu durante a queda não recebeu resposta e some em
         // silêncio. Retoma pedindo desculpa e repetindo a pergunta pendente.

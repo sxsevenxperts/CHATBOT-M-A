@@ -8,7 +8,7 @@ import express from 'express';
 
 import {
   getTriages, updateTriageStatus, getMessages, getStats, contarTestes,
-  purgeTestes, db, resetSession
+  purgeTestes, db, resetSession, resumoConexao
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
@@ -321,6 +321,15 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     const apagados = await purgeTestes();
     info('admin.testesApagados', apagados);
     res.json({ ok: true, apagados });
+  }));
+
+  /**
+   * Estabilidade da conexão no período — sobrevive a deploy, ao contrário da
+   * caixa preta. É o que responde "quantas vezes caiu esta semana?".
+   */
+  api.get('/conexao/historico', wrap(async (req, res) => {
+    const dias = Math.min(Math.max(Number(req.query.dias) || 7, 1), 90);
+    res.json(await resumoConexao({ dias }));
   }));
 
   /** Caixa preta: últimos eventos do sistema, para diagnosticar sem o console. */

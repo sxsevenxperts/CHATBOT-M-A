@@ -480,6 +480,18 @@
 
   <div class="panel">
     <div class="panel-head">
+      <h2 class="serif">Estabilidade da conexão</h2>
+      <div class="chips" id="chipsDias" style="margin-left:auto">
+        <button class="chip" data-dias="1">24h</button>
+        <button class="chip on" data-dias="7">7 dias</button>
+        <button class="chip" data-dias="30">30 dias</button>
+      </div>
+    </div>
+    <div class="panel-body" id="estab"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
       <h2 class="serif">Caixa preta</h2>
       <span class="label" id="logResumo" style="margin-left:auto;margin-right:10px"></span>
       <div class="filtros" id="logFiltros">
@@ -574,6 +586,7 @@ let firstLoad = true;
 let timer = null;
 let atual = [];
 let logNivel = 'all';
+let estabDias = 7;
 let filtro = { de: null, ate: null, testes: false };
 
 /** Monta a query compartilhada por triagens, stats e mensagens. */
@@ -720,6 +733,7 @@ async function refresh() {
       api('/status'),
       api('/log?limit=120&level=' + logNivel)
     ]);
+    api('/conexao/historico?dias=' + estabDias).then(r => r.json()).then(renderEstabilidade).catch(() => {});
     if (tr.status === 401) { localStorage.removeItem('maToken'); location.reload(); return; }
     const triages = await tr.json();
     atual = triages;
@@ -916,6 +930,45 @@ function renderFeed(list) {
     f.appendChild(d);
   }
 }
+
+function renderEstabilidade(d) {
+  const box = $('#estab');
+  const linhas = [
+    ['Quedas no período', d.quedas],
+    ['Tempo total fora', d.minutosFora ? `${d.minutosFora} min` : '0 min'],
+    ['Maior queda', d.maiorQuedaMin ? `${d.maiorQuedaMin} min` : '—'],
+    ['Disponibilidade', d.disponibilidade !== null ? `${d.disponibilidade}%` : 'sem histórico ainda'],
+    ['Última queda', d.ultimaQueda ? parseUTC(d.ultimaQueda).toLocaleString('pt-BR') : 'nenhuma registrada']
+  ];
+
+  let html = linhas.map(([k, v]) =>
+    `<div class="kv"><b>${k}</b><span>${esc(v)}</span></div>`).join('');
+
+  if (!d.eventos?.length) {
+    html += '<p style="margin-top:14px;font-size:12.5px;color:var(--faint);line-height:1.7">' +
+            'Ainda sem registro. Este histórico começa a contar agora e ' +
+            '<strong>sobrevive a deploy</strong> — diferente da caixa preta, que zera. ' +
+            'Em alguns dias haverá número real de quantas vezes a conexão cai.</p>';
+  } else {
+    html += '<div style="margin-top:14px"><span class="label">Eventos</span><div class="log" style="max-height:200px;margin-top:8px">' +
+      d.eventos.map(e => {
+        const caiu = e.event === 'caiu';
+        return `<div class="ev ${caiu ? 'error' : 'info'}">` +
+          `<time>${parseUTC(e.created_at).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</time>` +
+          `<div><span class="nome">${caiu ? 'caiu' : 'voltou'}</span>` +
+          `<div class="meta">${esc([e.status && `status ${e.status}`, e.fora_min != null && `${e.fora_min} min fora`,
+              e.tentativas && `${e.tentativas} tentativa(s)`, e.detalhe].filter(Boolean).join(' · '))}</div></div></div>`;
+      }).join('') + '</div></div>';
+  }
+  box.innerHTML = html;
+}
+
+$('#chipsDias').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  [...$('#chipsDias').children].forEach(x => x.classList.toggle('on', x === b));
+  estabDias = Number(b.dataset.dias);
+  refresh();
+});
 
 function renderLog(d) {
   const r = d.resumo || {};

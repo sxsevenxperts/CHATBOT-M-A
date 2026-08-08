@@ -120,6 +120,7 @@ escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
 | Fluxo de mensagens | Últimas mensagens trocadas, entrada e saída |
 | Conexão | Status do WhatsApp · **Conectar / Gerar QR** · **Reiniciar instância** · **Sincronizar webhook** — religar não exige abrir o Evolution Manager |
 | Caixa preta | Últimos eventos do sistema, com filtro por nível |
+| **Estabilidade da conexão** | Quedas, tempo fora, maior queda e disponibilidade em 24h / 7 / 30 dias — **sobrevive a deploy**, ao contrário da caixa preta |
 
 Para regerar os assets da marca a partir da arte:
 
@@ -268,7 +269,7 @@ vem com o conserto.
 npm test
 ```
 
-**191 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**199 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -436,7 +437,8 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `POST` | `/admin/api/sessions/:phone/reactivate` | Devolve o número ao bot |
 | `GET` | `/admin/api/messages` | Fluxo de mensagens — mesmos filtros |
 | `GET` | `/admin/api/stats` | Números do topo — mesmos filtros |
-| `GET` | `/admin/api/log` | Caixa preta (`?level=error`) |
+| `GET` | `/admin/api/log` | Caixa preta em memória (`?level=error`) |
+| `GET` | `/admin/api/conexao/historico` | Quedas persistidas (`?dias=7`) |
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
@@ -474,4 +476,5 @@ verificação — não reintroduza.
 | Sem fila por telefone | "oi" + nome juntos → boas-vindas duas vezes e nome perdido | As duas mensagens liam a mesma sessão em paralelo |
 | Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
 | Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
+| Histórico de quedas só em memória | Impossível responder "quantas vezes caiu?" — o anel zera a cada deploy | Faltava persistir em `connection_events` |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |
