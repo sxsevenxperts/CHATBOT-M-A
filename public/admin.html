@@ -303,6 +303,15 @@
     border-left:3px solid var(--brand);border-radius:12px;padding:14px 18px;margin-bottom:18px;
   }
   #banner .label{color:var(--brand-tint)}
+  #banner.grave{
+    background:rgba(198,28,41,.16);border-color:var(--brand);
+    animation:pulsa 2.4s ease-in-out infinite;
+  }
+  @keyframes pulsa{0%,100%{box-shadow:0 0 0 0 rgba(198,28,41,0)}50%{box-shadow:0 0 0 6px rgba(198,28,41,.12)}}
+  .qr-banner{display:flex;gap:18px;align-items:center;margin-top:14px;flex-wrap:wrap}
+  .qr-banner img{width:180px;height:180px;background:#fff;padding:9px;border-radius:10px;flex:none}
+  .qr-banner ol{margin:0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.9}
+  .qr-banner ol strong{color:var(--text)}
 
   @media(max-width:900px){ .two{grid-template-columns:1fr} .stats{grid-template-columns:repeat(2,1fr)} }
   @media(max-width:560px){ #app{padding:18px 14px 60px} .panel-body{padding:15px} }
@@ -665,7 +674,9 @@ function checkNew(triages) {
 
   $('#bellCount').textContent = ids.size;
   $('#bell').classList.toggle('has', ids.size > 0);
-  document.title = ids.size ? `(${ids.size}) M & A · Atendimento` : 'M & A · Atendimento';
+  if (!document.title.startsWith('⚠')) {
+    document.title = ids.size ? `(${ids.size}) M & A · Atendimento` : 'M & A · Atendimento';
+  }
 }
 
 $('#bell').onclick = async () => {
@@ -869,6 +880,48 @@ $('#logFiltros').addEventListener('click', e => {
 
 function renderStatus(s) {
   const wa = s.whatsapp || {}, wh = s.webhook || {};
+
+  // WhatsApp fora do ar é a pior falha possível: o negócio para de receber
+  // cliente. Tem prioridade sobre qualquer outro aviso.
+  const banner = $('#banner');
+  if (wa.connected === false) {
+    banner.dataset.reason = 'whatsapp';
+    banner.classList.add('grave');
+    banner.style.display = 'block';
+
+    const desde = s.boot?.whatsapp?.caiuEm || wa.caiuEm;
+    const min = desde ? Math.round((Date.now() - parseUTC(desde).getTime()) / 60000) : null;
+
+    $('#bannerMsg').innerHTML =
+      '<strong>WhatsApp desconectado — o bot NÃO está recebendo mensagens.</strong>' +
+      (min !== null ? ` <span style="color:var(--faint)">há ${min} min</span>` : '') +
+      (wa.status ? ` <span style="color:var(--faint)">· status ${esc(wa.status)}</span>` : '') +
+      '<div class="qr-banner" id="qrBanner"><div class="carregando" style="color:var(--faint);font-size:13px">buscando o QR Code…</div></div>';
+
+    // O QR vem para dentro do alarme: recuperar é escanear, não procurar.
+    api('/qr').then(r => r.json()).then(q => {
+      const slot = document.getElementById('qrBanner');
+      if (!slot) return;
+      const passos =
+        '<ol>' +
+        '<li>No celular <strong>(88) 98155-3041</strong>, abra o WhatsApp</li>' +
+        '<li>Toque em <strong>⋮ → Aparelhos conectados</strong></li>' +
+        '<li>Toque em <strong>Conectar um aparelho</strong></li>' +
+        '<li>Aponte para este código</li>' +
+        '</ol>';
+      slot.innerHTML = q.base64
+        ? `<img src="${q.base64.startsWith('data:') ? q.base64 : 'data:image/png;base64,' + q.base64}" alt="QR Code">${passos}`
+        : '<div style="font-size:13px;color:var(--muted)">O sistema está tentando reconectar sozinho. ' +
+          'Se não voltar em alguns minutos, reinicie a instância na Evolution.</div>';
+    }).catch(() => {});
+
+    if (!document.title.startsWith('⚠')) document.title = '⚠ WhatsApp offline · M & A';
+  } else if (banner.dataset.reason === 'whatsapp') {
+    banner.classList.remove('grave');
+    document.title = 'M & A · Atendimento';
+    delete banner.dataset.reason;
+    banner.style.display = 'none';
+  }
   const pw = $('#pillWa');
   pw.querySelector('.dot').className = 'dot ' + (wa.connected ? 'on' : 'off');
   pw.lastChild.textContent = wa.connected ? ` WhatsApp${wa.profileName ? ' · ' + wa.profileName : ''}` : ' WhatsApp offline';
@@ -884,7 +937,6 @@ function renderStatus(s) {
   if (boot.db && boot.db.ok === false) problemas.push(`Banco inacessível: ${boot.db.error}`);
   if (s.publicUrlSource === 'request') problemas.push('PUBLIC_URL não definida — derivada do endereço acessado.');
 
-  const banner = $('#banner');
   if (!banner.dataset.reason) {
     if (problemas.length) { banner.style.display = 'block'; $('#bannerMsg').textContent = problemas.join('  •  '); }
     else banner.style.display = 'none';

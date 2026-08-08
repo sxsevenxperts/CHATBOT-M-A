@@ -5,7 +5,7 @@ import express from 'express';
 import { initSupabase, keepalive, purgeTestes } from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
 import { setupAdmin } from './admin.js';
-import { checkConnection, getWebhook, setWebhook, getConfig } from './evolution.js';
+import { checkConnection, getWebhook, setWebhook, getConfig, reconnect } from './evolution.js';
 import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
 import { setProprioNumero } from './testflag.js';
 
@@ -28,7 +28,7 @@ const state = {
   startedAt: new Date().toISOString(),
   db: { ok: false, error: null },
   keepalive: { enabled: false, everyHours: null, lastOk: null, lastError: null, runs: 0 },
-  whatsapp: { ok: false, error: null, info: null },
+  whatsapp: { ok: false, error: null, info: null, caiuEm: null, tentativas: 0, precisaQr: false },
   webhook: { ok: false, error: null, url: null },
   env: {}
 };
@@ -99,6 +99,75 @@ async function initDependencies() {
     state.webhook.error = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
     falha('boot.webhookFalhou', e);
   }
+}
+
+/**
+ * Vigia a conexão do WhatsApp.
+ *
+ * Sem isto, state.whatsapp era medido UMA vez no boot e nunca mais. A sessão
+ * caiu às 09:45 e o /health continuou dizendo `ready: true` — o painel mostrava
+ * tudo verde com o atendimento parado há horas. Uma queda de conexão significa
+ * negócio sem receber cliente: tem de ser ruidosa.
+ */
+function startConnectionMonitor() {
+  const segundos = num('MONITOR_SECONDS', 60);
+  if (segundos <= 0) return;
+
+  let ultimaTentativa = 0;
+
+  const tick = async () => {
+    const antes = state.whatsapp.ok;
+    const caiuEm = state.whatsapp.caiuEm;
+    const tentativas = state.whatsapp.tentativas || 0;
+
+    try {
+      const wa = await checkConnection();
+      state.whatsapp = {
+        ok: wa.connected, error: null, info: wa,
+        checkedAt: new Date().toISOString(),
+        caiuEm: wa.connected ? null : (caiuEm || new Date().toISOString()),
+        tentativas: wa.connected ? 0 : tentativas,
+        precisaQr: wa.connected ? false : state.whatsapp.precisaQr
+      };
+
+      if (antes && !wa.connected) {
+        falha('whatsapp.caiu', new Error(`status ${wa.status}`), {
+          acao: 'tentando reconectar; se pedir QR, escaneie em /admin → Conexão'
+        });
+      } else if (!antes && wa.connected) {
+        const min = caiuEm ? Math.round((Date.now() - new Date(caiuEm).getTime()) / 60000) : 0;
+        info('whatsapp.voltou', { numero: wa.ownerJid, foraDoArMin: min, tentativas });
+      }
+
+      // Reconexão automática: queda transitória se resolve sem ninguém olhar.
+      // Estrangulada, porque insistir gera QR novo a cada chamada.
+      if (!wa.connected && Date.now() - ultimaTentativa > 120_000) {
+        ultimaTentativa = Date.now();
+        try {
+          const r = await reconnect();
+          state.whatsapp.tentativas = tentativas + 1;
+          state.whatsapp.precisaQr = r.precisaQr;
+          r.precisaQr
+            ? warn('whatsapp.precisaQr', { tentativa: tentativas + 1, acao: 'escaneie o QR em /admin → Conexão' })
+            : info('whatsapp.reconectando', { tentativa: tentativas + 1 });
+        } catch (e) {
+          falha('whatsapp.reconexaoFalhou', e, { tentativa: tentativas + 1 });
+        }
+      }
+    } catch (e) {
+      state.whatsapp = {
+        ok: false, error: e.message, info: state.whatsapp.info,
+        checkedAt: new Date().toISOString(),
+        caiuEm: caiuEm || new Date().toISOString(),
+        tentativas, precisaQr: state.whatsapp.precisaQr
+      };
+      if (antes) falha('whatsapp.inacessivel', e);
+    }
+  };
+
+  const timer = setInterval(tick, segundos * 1000);
+  timer.unref?.();
+  info('monitor.ativo', { intervaloSegundos: segundos });
 }
 
 /**
@@ -240,6 +309,7 @@ async function main() {
   }
 
   if (state.db.ok) startKeepalive();
+  startConnectionMonitor();
 
   const base = PUBLIC_URL || `http://localhost:${PORT}`;
   console.log('\n' + (state.db.ok ? '✔ Pronto.' : '⚠ No ar, mas DEGRADADO.'));
@@ -249,6 +319,7 @@ async function main() {
   console.log(`  Delay      ${num('REPLY_DELAY_MIN_MS', 3000)}–${num('REPLY_DELAY_MAX_MS', 5000)} ms`);
   console.log(`  Rearme     ${num('REARM_HOURS', 24)}h após o último contato`);
   console.log(`  Keepalive  ${state.keepalive.enabled ? `a cada ${state.keepalive.everyHours}h (anti-pause do Supabase free)` : 'desativado'}`);
+  console.log(`  Monitor    conexão do WhatsApp a cada ${num('MONITOR_SECONDS', 60)}s`);
 
   if (missing.length) console.log(`\n  ✖ faltam variáveis: ${missing.join(', ')}`);
   if (!state.db.ok) console.log(`  ✖ banco: ${state.db.error}`);
