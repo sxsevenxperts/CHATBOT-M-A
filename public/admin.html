@@ -469,6 +469,7 @@
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-sm btn-primary" id="btnConectar">Conectar / Gerar QR</button>
           <button class="btn btn-sm" id="btnReiniciar">Reiniciar instância</button>
+          <button class="btn btn-sm" id="btnDesconectar" title="Use quando o envio é aceito mas a mensagem não chega">Desconectar e pareear</button>
           <button class="btn btn-sm" id="btnRetomar" title="Pede desculpa e repete a pergunta pendente para quem ficou sem resposta">Retomar conversas</button>
           <button class="btn btn-sm" id="btnSync">Sincronizar webhook</button>
         </div>
@@ -1141,6 +1142,28 @@ $('#btnConectar').onclick = async () => {
     const j = await r.json();
     if (!r.ok) { area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(j.error || 'falhou')}</p>`; return; }
     mostrarQr(j, area);
+    refresh();
+  } catch (e) {
+    area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(String(e.message || e))}</p>`;
+  }
+};
+
+$('#btnDesconectar').onclick = async () => {
+  if (!confirm('Encerrar a sessão do WhatsApp e pareear de novo?\n\n' +
+              'Use quando a mensagem é aceita mas NÃO chega ao cliente — reiniciar não resolve esse caso.\n\n' +
+              'O bot fica fora do ar até você escanear o novo QR Code.')) return;
+
+  const area = $('#conectarArea');
+  area.style.display = 'block';
+  area.innerHTML = '<span class="label">Conexão</span><p style="font-size:13px;color:var(--faint);margin-top:6px">' +
+                   'encerrando a sessão e gerando o QR… isto leva alguns segundos</p>';
+  try {
+    const r = await api('/whatsapp/desconectar', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok) { area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(j.error || 'falhou')}</p>`; return; }
+    mostrarQr(j, area);
+    if (!j.qr) area.innerHTML += '<p style="font-size:13px;color:var(--muted);margin-top:10px">' +
+      'O QR ainda não veio. Clique em <strong>Conectar / Gerar QR</strong> em alguns segundos.</p>';
     refresh();
   } catch (e) {
     area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(String(e.message || e))}</p>`;

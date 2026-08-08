@@ -12,7 +12,7 @@ import {
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
-  reconnect, restartInstance, criarInstanciaOficial
+  reconnect, restartInstance, criarInstanciaOficial, logoutEPareaerDeNovo
 } from './evolution.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 import { retomarConversas } from './flow.js';
@@ -239,6 +239,18 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     const horas = Math.min(Math.max(Number(req.body?.horas) || 6, 1), 48);
     const r = await retomarConversas({ ultimasHoras: horas });
     res.json({ ok: true, ...r, janelaHoras: horas });
+  }));
+
+  /**
+   * Encerra a sessão e devolve o QR do novo pareamento.
+   *
+   * Para quando a Evolution diz `open`, aceita o envio e a mensagem não chega:
+   * reiniciar não resolve, porque o estado interno continua "conectado".
+   */
+  api.post('/whatsapp/desconectar', wrap(async (_req, res) => {
+    const r = await logoutEPareaerDeNovo();
+    info('admin.whatsappLogout', { qrGerado: !!r.qr });
+    res.json({ ok: true, ...r });
   }));
 
   /** Reinicia a instância, para estado travado. */
