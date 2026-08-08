@@ -229,10 +229,17 @@ function startConnectionMonitor() {
       state.entrega = { ...r, checadoEm: new Date().toISOString() };
 
       if (r.saudavel === false && antes !== false) {
-        falha('entrega.falhando', new Error(`${r.semConfirmacao} mensagens sem confirmação`), {
-          enviadas: r.enviadas, entregues: r.entregues,
-          acao: 'a Evolution aceita mas o WhatsApp não entrega — use "Desconectar e pareear"'
-        });
+        const rejeitou = r.rejeitadas > 0;
+        falha('entrega.falhando',
+          new Error(rejeitou
+            ? `${r.rejeitadas} mensagens REJEITADAS pelo WhatsApp (status ERROR)`
+            : `${r.semConfirmacao} mensagens sem confirmação`),
+          {
+            enviadas: r.enviadas, entregues: r.entregues, rejeitadas: r.rejeitadas,
+            acao: rejeitou
+              ? 'o WhatsApp está recusando os envios: verifique se o número tem restrição no aparelho antes de repareaar'
+              : 'a Evolution aceita mas o WhatsApp não entrega — use "Desconectar e pareear"'
+          });
       } else if (r.saudavel === true && antes === false) {
         info('entrega.normalizou', { entregues: r.entregues, enviadas: r.enviadas });
       }

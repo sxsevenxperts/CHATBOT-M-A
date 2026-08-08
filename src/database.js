@@ -129,6 +129,10 @@ export async function atualizarStatusMensagem(waId, status) {
  * consumiu 08/08/2026: envio aceito com PENDING e nada no celular do cliente.
  */
 const ENTREGUES = ['DELIVERY_ACK', 'READ', 'PLAYED'];
+// ERROR é o WhatsApp REJEITANDO a mensagem — diferente de "ainda sem
+// confirmação". Foi o que revelou, em 08/08/2026, que o problema não era
+// demora: era recusa. Merece nome próprio no diagnóstico.
+const REJEITADAS = ['ERROR'];
 
 export async function resumoEntrega({ minutos = 30 } = {}) {
   const desde = new Date(Date.now() - minutos * 60_000).toISOString();
@@ -144,16 +148,18 @@ export async function resumoEntrega({ minutos = 30 } = {}) {
   const todas = data || [];
   const antigas = todas.filter(m => m.created_at < maduro);
   const entregues = todas.filter(m => ENTREGUES.includes(m.status)).length;
+  const rejeitadas = todas.filter(m => REJEITADAS.includes(m.status)).length;
   const semAck = antigas.filter(m => !m.status || m.status === 'PENDING').length;
 
   return {
     minutos,
     enviadas: todas.length,
     entregues,
+    rejeitadas,
     noServidor: todas.filter(m => m.status === 'SERVER_ACK').length,
     semConfirmacao: semAck,
-    // null = sem dado suficiente para julgar. false = está engolindo.
-    saudavel: antigas.length === 0 ? null : entregues > 0
+    // null = sem dado suficiente para julgar. false = não está chegando.
+    saudavel: antigas.length === 0 && !rejeitadas ? null : (entregues > 0 && !rejeitadas)
   };
 }
 

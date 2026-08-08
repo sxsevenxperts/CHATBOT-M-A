@@ -926,7 +926,8 @@ function renderFeed(list) {
     const d = document.createElement('div');
     d.className = 'msg ' + (m.direction === 'in' ? 'in' : 'out');
     const lb = document.createElement('span'); lb.className = 'label';
-    const ENT = { PENDING:'⏳ enviando', SERVER_ACK:'✓ no servidor', DELIVERY_ACK:'✓✓ entregue', READ:'✓✓ lida', PLAYED:'✓✓ ouvida' };
+    const ENT = { PENDING:'⏳ enviando', SERVER_ACK:'✓ no servidor', DELIVERY_ACK:'✓✓ entregue',
+                  READ:'✓✓ lida', PLAYED:'✓✓ ouvida', ERROR:'✖ REJEITADA pelo WhatsApp' };
     const st = m.direction === 'out'
       ? ' · ' + (ENT[m.status] || (m.status ? m.status : '⏳ sem confirmação'))
       : '';
@@ -1079,7 +1080,9 @@ function renderStatus(s) {
     (ent.saudavel === true ? 'on' : ent.saudavel === false ? 'off' : 'warn');
   pe.lastChild.textContent = ent.saudavel === true
     ? ` Entrega ok (${ent.entregues}/${ent.enviadas})`
-    : ent.saudavel === false ? ' Entrega FALHANDO' : ' Entrega sem dados';
+    : ent.saudavel === false
+      ? (ent.rejeitadas ? ` ${ent.rejeitadas} REJEITADAS` : ' Entrega FALHANDO')
+      : ' Entrega sem dados';
 
   // Alarme: mensagens aceitas e não entregues é falha silenciosa — a pior.
   if (ent.saudavel === false && banner.dataset.reason !== 'whatsapp') {
@@ -1088,9 +1091,14 @@ function renderStatus(s) {
     banner.style.display = 'block';
     $('#bannerMsg').innerHTML =
       '<strong>As mensagens do bot NÃO estão sendo entregues.</strong><br>' +
-      `${ent.semConfirmacao} mensagem(ns) dos últimos ${ent.minutos} min saíram sem confirmação de entrega. ` +
-      'A Evolution aceita, o WhatsApp não entrega.<br>' +
-      'Remédio: <strong>Desconectar e pareear</strong> no painel Conexão — reiniciar não resolve este caso.';
+      (ent.rejeitadas
+        ? `<strong>${ent.rejeitadas}</strong> mensagem(ns) foram <strong>REJEITADAS</strong> pelo WhatsApp (status ERROR) ` +
+          `nos últimos ${ent.minutos} min. Não é demora: é recusa.<br>` +
+          'Antes de repareaar, verifique no aparelho se o número tem aviso de restrição — ' +
+          'repareamento repetido piora esse caso.'
+        : `${ent.semConfirmacao} mensagem(ns) dos últimos ${ent.minutos} min saíram sem confirmação. ` +
+          'A Evolution aceita, o WhatsApp não entrega.<br>' +
+          'Remédio: <strong>Desconectar e pareear</strong> no painel Conexão.');
   } else if (banner.dataset.reason === 'entrega' && ent.saudavel !== false) {
     delete banner.dataset.reason;
     banner.classList.remove('grave');

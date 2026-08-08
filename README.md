@@ -274,7 +274,7 @@ vem com o conserto.
 npm test
 ```
 
-**224 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**229 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -362,7 +362,14 @@ Agora cada envio guarda o `wa_id` da mensagem, o webhook escuta
 ```
 ⏳ PENDING  →  ✓ SERVER_ACK  →  ✓✓ DELIVERY_ACK  →  ✓✓ READ
    aceito       no servidor        no celular         lida
+
+✖ ERROR  →  o WhatsApp RECUSOU a mensagem. Não é demora.
 ```
+
+**`ERROR` tem remédio diferente.** Sem confirmação pode ser sessão ruim, e
+repareaar resolve. `ERROR` é recusa: repareamento repetido tende a piorar. Nesse
+caso, primeiro verifique no aparelho se o número tem aviso de restrição, e teste
+enviar uma mensagem **manualmente** — se a manual também falhar, é a conta.
 
 Se nada dos últimos 30 min chegar a `DELIVERY_ACK`, o dashboard levanta alarme
 vermelho e a caixa preta grava `entrega.falhando`. **A falha silenciosa deixou
@@ -540,6 +547,6 @@ verificação — não reintroduza.
 | Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
 | Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
 | Histórico de quedas só em memória | Impossível responder "quantas vezes caiu?" — o anel zera a cada deploy | Faltava persistir em `connection_events` |
-| Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE` |
+| Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE`. O ACK real era `ERROR` |
 | Auto-correção do webhook só olhando a URL | `MESSAGES_UPDATE` nunca era adicionado: a URL estava certa e o boot retornava antes | Precisa comparar a **lista de eventos** também |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |
