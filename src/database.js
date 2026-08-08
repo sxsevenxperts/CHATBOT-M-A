@@ -1,5 +1,7 @@
 import './env.js';
 import { createClient } from '@supabase/supabase-js';
+import { warn } from './recorder.js';
+import { isTestPhone } from './testflag.js';
 
 let supabase;
 
@@ -40,7 +42,9 @@ export async function getSession(phone) {
 }
 
 export async function saveSession(phone, { step, data, handed_off }) {
-  const row = { phone, updated_at: new Date().toISOString() };
+  // is_test também aqui: sem isso a sessão de teste sobrevivia à limpeza e o
+  // bot continuava silenciado para um número que só existiu num teste.
+  const row = { phone, updated_at: new Date().toISOString(), is_test: isTestPhone(phone) };
   if (step !== undefined) row.step = step;
   if (data !== undefined) row.data = data;
   if (handed_off !== undefined) row.handed_off = handed_off;
@@ -58,13 +62,19 @@ export async function resetSession(phone) {
 
 export async function logMessage(phone, direction, body) {
   // Log é observabilidade: nunca deve derrubar o atendimento.
-  const { error } = await db().from('messages').insert([{ phone, direction, body }]);
-  if (error) console.error('[db] falha ao logar mensagem:', error.message);
+  const { error } = await db()
+    .from('messages')
+    .insert([{ phone, direction, body, is_test: isTestPhone(phone) }]);
+  if (error) warn('db.logMensagemFalhou', { erro: error.message });
 }
 
-export async function getMessages(limit = 100) {
-  const { data, error } = await db()
-    .from('messages').select('*').order('created_at', { ascending: false }).limit(limit);
+export async function getMessages({ limit = 100, incluirTestes = false, de = null, ate = null } = {}) {
+  let q = db().from('messages').select('*');
+  if (!incluirTestes) q = q.eq('is_test', false);
+  if (de) q = q.gte('created_at', de);
+  if (ate) q = q.lt('created_at', ate);
+
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(limit);
   if (error) throw error;
   return data;
 }
@@ -116,16 +126,25 @@ export async function saveTriage(t) {
     origin: 'chatbot',
     note: notas.length ? notas.join(' · ') : null,
     status: 'pending',
-    seen: false
+    seen: false,
+    is_test: isTestPhone(t.phone)
   }]).select();
 
   if (error) throw error;
   return data[0];
 }
 
-export async function getTriages(limit = 100) {
-  const { data, error } = await db()
-    .from('triages').select('*').order('created_at', { ascending: false }).limit(limit);
+/**
+ * @param {{limit?:number, incluirTestes?:boolean, de?:string, ate?:string}} f
+ *   `de`/`ate` são ISO; `ate` é exclusivo, então o chamador passa o dia seguinte.
+ */
+export async function getTriages({ limit = 100, incluirTestes = false, de = null, ate = null } = {}) {
+  let q = db().from('triages').select('*');
+  if (!incluirTestes) q = q.eq('is_test', false);
+  if (de) q = q.gte('created_at', de);
+  if (ate) q = q.lt('created_at', ate);
+
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(limit);
   if (error) throw error;
   return data;
 }
@@ -140,12 +159,45 @@ export async function updateTriageStatus(id, status) {
   return data[0];
 }
 
-export async function getStats() {
-  const { data, error } = await db().from('triages').select('status');
+/** Os números do topo respeitam os mesmos filtros da lista. */
+export async function getStats({ incluirTestes = false, de = null, ate = null } = {}) {
+  let q = db().from('triages').select('status');
+  if (!incluirTestes) q = q.eq('is_test', false);
+  if (de) q = q.gte('created_at', de);
+  if (ate) q = q.lt('created_at', ate);
+
+  const { data, error } = await q;
   if (error) throw error;
 
   return data.reduce(
     (acc, r) => ({ ...acc, total: acc.total + 1, [r.status]: (acc[r.status] || 0) + 1 }),
     { total: 0, pending: 0, contacted: 0, completed: 0, rejected: 0 }
   );
+}
+
+/**
+ * Apaga tudo o que está marcado como teste.
+ *
+ * Os testes servem para validar agora; o banco de produção não deve carregar
+ * cliente inventado. Roda no boot fora de ambiente de teste e pelo botão do
+ * dashboard. Só toca linhas com is_test = true.
+ */
+export async function purgeTestes() {
+  const out = {};
+  for (const tabela of ['messages', 'triages', 'bot_sessions']) {
+    const { data, error } = await db().from(tabela).delete().eq('is_test', true).select('*');
+    if (error) throw new Error(`${tabela}: ${error.message}`);
+    out[tabela] = data?.length || 0;
+  }
+  return out;
+}
+
+/** Quantos testes existem, para o dashboard oferecer o botão de mostrá-los. */
+export async function contarTestes({ de = null, ate = null } = {}) {
+  let q = db().from('triages').select('*', { count: 'exact', head: true }).eq('is_test', true);
+  if (de) q = q.gte('created_at', de);
+  if (ate) q = q.lt('created_at', ate);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count || 0;
 }

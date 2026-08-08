@@ -20,6 +20,9 @@
 
     --amber:#D9A648; --blue:#6E8FB8; --green:#4EA87A; --grey:#7A6E70;
 
+    /* Marca SX Seven Xperts: verde-limão → turquesa, do material da agência. */
+    --sx-lima:#C9F73A; --sx-turquesa:#12D6D2;
+
     --serif:ui-serif,Georgia,"Times New Roman",serif;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
     --r:14px;
@@ -189,6 +192,72 @@
   .qr{margin-top:16px;text-align:center}
   .qr img{width:236px;height:236px;background:#fff;padding:10px;border-radius:10px}
 
+  /* ---------------- Rodapé ---------------- */
+  .rodape{
+    margin-top:26px;padding-top:18px;border-top:1px solid var(--line);
+    text-align:center;font-size:11.5px;color:var(--faint);line-height:1.7;
+  }
+  .rodape .sx{
+    font-weight:700;letter-spacing:.04em;
+    background:linear-gradient(95deg,var(--sx-lima),var(--sx-turquesa));
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent;color:transparent;
+  }
+  .rodape .cnpj{font-variant-numeric:tabular-nums;color:var(--faint)}
+  .rodape a{text-decoration:none}
+  .rodape .risco{
+    width:56px;height:2px;margin:0 auto 14px;border-radius:2px;
+    background:linear-gradient(90deg,var(--sx-lima),var(--sx-turquesa));
+    opacity:.85;
+  }
+  .login-card .rodape{margin-top:22px;padding-top:16px}
+
+  /* ---------------- Barra de filtros ---------------- */
+  .barra{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:13px 18px;border-bottom:1px solid var(--line);background:#100C0D;
+  }
+  .chips{display:flex;gap:5px;flex-wrap:wrap}
+  .chip{
+    padding:6px 12px;font-size:12px;border-radius:99px;border:1px solid var(--line);
+    background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap;
+  }
+  .chip:hover{border-color:var(--brand-line)}
+  .chip.on{border-color:var(--brand-line);color:var(--brand-tint);background:var(--brand-soft);font-weight:600}
+  .datas{display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap}
+  .datas input[type=date]{
+    padding:6px 9px;background:#0C0A0B;border:1px solid var(--line);border-radius:8px;
+    color:var(--text);font-family:var(--sans);font-size:12px;color-scheme:dark;
+  }
+  .datas input[type=date]:focus{outline:none;border-color:var(--brand-line)}
+  .datas .sep{color:var(--faint);font-size:12px}
+  .aviso-teste{
+    display:none;align-items:center;gap:9px;padding:9px 18px;font-size:12.5px;
+    background:rgba(217,166,72,.10);border-bottom:1px solid rgba(217,166,72,.3);color:var(--amber);
+  }
+  .aviso-teste.on{display:flex}
+
+  /* ---------------- Caixa preta ---------------- */
+  .log{max-height:340px;overflow-y:auto;padding:10px 14px;font-size:12.5px}
+  .ev{
+    display:grid;grid-template-columns:64px 1fr;gap:10px;padding:7px 9px;border-radius:8px;
+    border:1px solid transparent;margin-bottom:5px;align-items:baseline;
+  }
+  .ev time{color:var(--faint);font-variant-numeric:tabular-nums;font-size:11px}
+  .ev .nome{font-weight:600}
+  .ev .meta{color:var(--muted);font-size:11.5px;word-break:break-word}
+  .ev.info{background:#181314;border-color:var(--line)}
+  .ev.warn{background:rgba(217,166,72,.10);border-color:rgba(217,166,72,.34)}
+  .ev.warn .nome{color:var(--amber)}
+  .ev.error{background:var(--brand-soft);border-color:var(--brand-line)}
+  .ev.error .nome{color:var(--brand-tint)}
+  .filtros{display:flex;gap:5px}
+  .filtros button{
+    padding:5px 10px;font-size:11px;border-radius:7px;border:1px solid var(--line);
+    background:transparent;color:var(--muted);cursor:pointer;
+  }
+  .filtros button.on{border-color:var(--brand-line);color:var(--brand-tint);background:var(--brand-soft)}
+
   /* ---------------- Drawer de contexto ---------------- */
   #drawer{
     position:fixed;inset:0;background:rgba(4,3,3,.72);backdrop-filter:blur(3px);
@@ -253,7 +322,12 @@
       <button class="btn btn-primary btn-block" type="submit">Entrar</button>
     </form>
     <div class="err" id="loginErr"></div>
-    <div class="label" style="margin-top:18px;font-size:9.5px">build {{BUILD}}</div>
+    <div class="rodape">
+      <div class="risco"></div>
+      Powered by <span class="sx">SX SEVEN XPERTS</span><br>
+      <span class="cnpj">CNPJ 32.794.007/0001-19</span><br>
+      <span style="font-size:9.5px">build {{BUILD}}</span>
+    </div>
   </div>
 </section>
 
@@ -297,6 +371,31 @@
       <span class="label" style="margin-left:auto;margin-right:10px">clique na linha para ver o contexto</span>
       <button class="btn btn-sm" id="btnReload">Atualizar</button>
     </div>
+
+    <div class="barra">
+      <div class="chips" id="chipsPeriodo">
+        <button class="chip" data-dias="0">Hoje</button>
+        <button class="chip" data-dias="1">Ontem</button>
+        <button class="chip" data-dias="7">7 dias</button>
+        <button class="chip" data-dias="30">30 dias</button>
+        <button class="chip on" data-dias="">Tudo</button>
+      </div>
+      <div class="datas">
+        <span class="label">De</span>
+        <input type="date" id="dtDe">
+        <span class="sep">→</span>
+        <span class="label">Até</span>
+        <input type="date" id="dtAte">
+        <button class="chip" id="btnLimparDatas">Limpar</button>
+      </div>
+    </div>
+
+    <div class="aviso-teste" id="avisoTeste">
+      <span id="avisoTesteMsg"></span>
+      <button class="btn btn-sm" id="btnVerTestes" style="margin-left:auto">Mostrar</button>
+      <button class="btn btn-sm" id="btnLimparTestes">Apagar testes</button>
+    </div>
+
     <div class="panel-body flush">
       <div class="scroll">
         <table>
@@ -325,6 +424,26 @@
       <div class="panel-body" id="conn"></div>
     </div>
   </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2 class="serif">Caixa preta</h2>
+      <span class="label" id="logResumo" style="margin-left:auto;margin-right:10px"></span>
+      <div class="filtros" id="logFiltros">
+        <button data-nivel="all" class="on">Tudo</button>
+        <button data-nivel="warn">Avisos</button>
+        <button data-nivel="error">Erros</button>
+      </div>
+    </div>
+    <div class="panel-body flush"><div class="log" id="log"></div></div>
+  </div>
+
+  <footer class="rodape">
+    <div class="risco"></div>
+    Powered by <span class="sx">SX SEVEN XPERTS</span>
+    &nbsp;·&nbsp; <span class="cnpj">CNPJ 32.794.007/0001-19</span><br>
+    <span style="font-size:9.5px">M &amp; A Lavagens e Estética · build {{BUILD}}</span>
+  </footer>
 </main>
 
 <!-- ============ Contexto para a atendente ============ -->
@@ -362,6 +481,74 @@ let knownUnseen = new Set();
 let firstLoad = true;
 let timer = null;
 let atual = [];
+let logNivel = 'all';
+let filtro = { de: null, ate: null, testes: false };
+
+/** Monta a query compartilhada por triagens, stats e mensagens. */
+function qsFiltro(extra = '') {
+  const p = new URLSearchParams();
+  if (filtro.de) p.set('de', filtro.de);
+  if (filtro.ate) p.set('ate', filtro.ate);
+  if (filtro.testes) p.set('testes', '1');
+  const q = p.toString();
+  return extra + (q ? (extra.includes('?') ? '&' : '?') + q : '');
+}
+
+const hojeISO = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+const diasAtrasISO = n => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
+$('#chipsPeriodo').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  [...$('#chipsPeriodo').children].forEach(x => x.classList.toggle('on', x === b));
+  const dias = b.dataset.dias;
+
+  if (dias === '') { filtro.de = filtro.ate = null; }
+  else if (dias === '0') { filtro.de = filtro.ate = hojeISO(); }
+  else if (dias === '1') { filtro.de = filtro.ate = diasAtrasISO(1); }
+  else { filtro.de = diasAtrasISO(Number(dias) - 1); filtro.ate = hojeISO(); }
+
+  $('#dtDe').value = filtro.de || '';
+  $('#dtAte').value = filtro.ate || '';
+  refresh();
+});
+
+// Datas personalizadas desmarcam os atalhos.
+for (const id of ['#dtDe', '#dtAte']) {
+  $(id).addEventListener('change', () => {
+    filtro.de = $('#dtDe').value || null;
+    filtro.ate = $('#dtAte').value || null;
+    [...$('#chipsPeriodo').children].forEach(x => x.classList.remove('on'));
+    refresh();
+  });
+}
+
+$('#btnLimparDatas').onclick = () => {
+  filtro.de = filtro.ate = null;
+  $('#dtDe').value = ''; $('#dtAte').value = '';
+  [...$('#chipsPeriodo').children].forEach(x => x.classList.toggle('on', x.dataset.dias === ''));
+  refresh();
+};
+
+$('#btnVerTestes').onclick = () => { filtro.testes = !filtro.testes; refresh(); };
+
+$('#btnLimparTestes').onclick = async () => {
+  if (!confirm('Apagar TODAS as conversas marcadas como teste?\n\nAtendimentos reais não são afetados.')) return;
+  const r = await api('/testes', { method: 'DELETE' });
+  const j = await r.json();
+  if (r.ok) {
+    const t = j.apagados || {};
+    toast('Testes apagados', `${t.triages || 0} triagens · ${t.messages || 0} mensagens · ${t.bot_sessions || 0} sessões`);
+    filtro.testes = false;
+  } else toast('Falha', j.error || 'não foi possível apagar');
+  refresh();
+};
 
 /* ---------------- Login ---------------- */
 $('#loginForm').addEventListener('submit', async e => {
@@ -434,8 +621,12 @@ function conexaoOk(ok, err) {
 
 async function refresh() {
   try {
-    const [tr, st, ms, sr] = await Promise.all([
-      api('/triages?limit=120'), api('/stats'), api('/messages?limit=100'), api('/status')
+    const [tr, st, ms, sr, lg] = await Promise.all([
+      api(qsFiltro('/triages?limit=120')),
+      api(qsFiltro('/stats')),
+      api(qsFiltro('/messages?limit=100')),
+      api('/status'),
+      api('/log?limit=120&level=' + logNivel)
     ]);
     if (tr.status === 401) { localStorage.removeItem('maToken'); location.reload(); return; }
     const triages = await tr.json();
@@ -444,6 +635,7 @@ async function refresh() {
     renderTriages(triages);
     renderFeed(await ms.json());
     renderStatus(await sr.json());
+    renderLog(await lg.json());
     checkNew(triages);
     conexaoOk(true);
   } catch (e) { console.error('refresh', e); conexaoOk(false, e); }
@@ -535,6 +727,14 @@ function preferencia(t) {
 }
 
 function renderStats(s) {
+  const aviso = $('#avisoTeste');
+  const qtd = s.testes || 0;
+  aviso.classList.toggle('on', qtd > 0 || filtro.testes);
+  $('#avisoTesteMsg').textContent = filtro.testes
+    ? 'Mostrando também as conversas de teste.'
+    : `${qtd} conversa${qtd === 1 ? '' : 's'} de teste oculta${qtd === 1 ? '' : 's'} — a lista mostra só atendimento real.`;
+  $('#btnVerTestes').textContent = filtro.testes ? 'Ocultar' : 'Mostrar';
+
   $('#sPending').textContent = s.pending || 0;
   $('#sContacted').textContent = s.contacted || 0;
   $('#sCompleted').textContent = s.completed || 0;
@@ -544,9 +744,10 @@ function renderStats(s) {
 function renderTriages(list) {
   const tb = $('#rows');
   if (!list.length) {
+    const comFiltro = filtro.de || filtro.ate;
     tb.innerHTML = `<tr><td colspan="8" class="empty">
-      <span class="serif">Nenhuma solicitação ainda</span>
-      As triagens do WhatsApp aparecem aqui automaticamente.</td></tr>`;
+      <span class="serif">${comFiltro ? 'Nenhuma solicitação no período' : 'Nenhuma solicitação ainda'}</span>
+      ${comFiltro ? 'Ajuste as datas ou escolha Tudo.' : 'As triagens do WhatsApp aparecem aqui automaticamente.'}</td></tr>`;
     return;
   }
   tb.innerHTML = '';
@@ -566,7 +767,8 @@ function renderTriages(list) {
 
     const c3 = document.createElement('td');
     c3.innerHTML = esc(t.service || t.subject || '—') +
-                   (t.recommended ? ' <span class="tag">indicado</span>' : '');
+                   (t.recommended ? ' <span class="tag">indicado</span>' : '') +
+                   (t.is_test ? ' <span class="tag plain">teste</span>' : '');
 
     const c4 = document.createElement('td');
     c4.innerHTML = t.level ? `<span class="tag plain">${esc(t.level)}</span>` : '<span class="soft">—</span>';
@@ -620,6 +822,50 @@ function renderFeed(list) {
     f.appendChild(d);
   }
 }
+
+function renderLog(d) {
+  const r = d.resumo || {};
+  $('#logResumo').textContent =
+    `${r.emMemoria || 0}/${r.capacidade || 0} · ${r.porNivel?.error || 0} erros · ${r.porNivel?.warn || 0} avisos`;
+
+  const box = $('#log');
+  const eventos = d.eventos || [];
+  if (!eventos.length) {
+    box.innerHTML = '<div class="empty"><span class="serif">Nenhum evento</span>O registro zera a cada deploy.</div>';
+    return;
+  }
+
+  box.innerHTML = '';
+  for (const e of eventos) {
+    const div = document.createElement('div');
+    div.className = 'ev ' + e.level;
+
+    const t = document.createElement('time');
+    t.textContent = parseUTC(e.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    t.title = parseUTC(e.at).toLocaleString('pt-BR');
+
+    const corpo = document.createElement('div');
+    const nome = document.createElement('span'); nome.className = 'nome'; nome.textContent = e.event;
+    corpo.appendChild(nome);
+
+    if (e.meta && Object.keys(e.meta).length) {
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = Object.entries(e.meta).map(([k, v]) => `${k}: ${v}`).join(' · ');
+      corpo.appendChild(meta);
+    }
+
+    div.append(t, corpo);
+    box.appendChild(div);
+  }
+}
+
+$('#logFiltros').addEventListener('click', e => {
+  const b = e.target.closest('button[data-nivel]');
+  if (!b) return;
+  logNivel = b.dataset.nivel;
+  [...$('#logFiltros').children].forEach(x => x.classList.toggle('on', x === b));
+  refresh();
+});
 
 function renderStatus(s) {
   const wa = s.whatsapp || {}, wh = s.webhook || {};

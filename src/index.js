@@ -2,10 +2,12 @@ import './env.js';                 // carrega o .env antes de tudo
 import { str, num } from './env.js';
 import express from 'express';
 
-import { initSupabase, keepalive } from './database.js';
+import { initSupabase, keepalive, purgeTestes } from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight } from './webhook.js';
 import { setupAdmin } from './admin.js';
 import { checkConnection, getWebhook, setWebhook, getConfig } from './evolution.js';
+import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
+import { setProprioNumero } from './testflag.js';
 
 const PORT = num('PORT', 3000);
 // O domínio do EasyPanel pode estar apontado para 3000 ou 3001. Escutar nos
@@ -43,8 +45,7 @@ function checkEnv() {
   };
 
   if (missing.length) {
-    console.error(`\n[boot] ✖ VARIÁVEIS FALTANDO: ${missing.join(', ')}`);
-    console.error('[boot]   Adicione nas variáveis de ambiente do EasyPanel e faça redeploy.\n');
+    falha('boot.envFaltando', new Error(missing.join(', ')), { onde: 'EasyPanel → variáveis' });
   }
   return missing;
 }
@@ -54,32 +55,31 @@ async function initDependencies() {
   try {
     await initSupabase();
     state.db.ok = true;
-    console.log('[boot] Supabase ok (triages, bot_sessions, messages)');
+    info('boot.supabase', { tabelas: 'triages, bot_sessions, messages' });
   } catch (e) {
     state.db.error = e.message;
-    console.error('[boot] ✖ Supabase:', e.message);
+    falha('boot.supabaseFalhou', e);
   }
 
   // Evolution
   try {
     const { baseUrl, instance } = getConfig();
-    console.log(`[boot] Evolution: ${baseUrl} · instância "${instance}"`);
+    info('boot.evolution', { baseUrl, instancia: instance });
     const wa = await checkConnection();
     state.whatsapp = { ok: wa.connected, error: null, info: wa };
-    console.log(
-      wa.connected
-        ? `[boot] WhatsApp conectado: ${wa.ownerJid} (${wa.profileName || 'sem nome'})`
-        : `[boot] WhatsApp NÃO conectado (status: ${wa.status}) — escaneie o QR em /admin`
-    );
+    // Conversa com o próprio número é teste: marca as triagens como tal.
+    if (wa.ownerJid) setProprioNumero(wa.ownerJid);
+    if (wa.connected) info('boot.whatsapp', { numero: wa.ownerJid, perfil: wa.profileName || '—' });
+    else warn('boot.whatsappOffline', { status: wa.status, acao: 'escaneie o QR em /admin' });
   } catch (e) {
     state.whatsapp.error = e.message;
-    console.error('[boot] ✖ Evolution:', e.message);
+    falha('boot.evolutionFalhou', e);
   }
 
   // Webhook: aponta para cá sozinho, se soubermos a URL pública.
   if (!PUBLIC_URL) {
     state.webhook.error = 'PUBLIC_URL não definida — sincronize pelo dashboard';
-    console.warn('[boot] PUBLIC_URL não definida — webhook não sincronizado no boot');
+    warn('boot.publicUrlAusente', { efeito: 'webhook não sincroniza sozinho' });
     return;
   }
 
@@ -88,16 +88,16 @@ async function initDependencies() {
     const current = await getWebhook();
     if (current?.enabled && current?.url === expected) {
       state.webhook = { ok: true, error: null, url: expected };
-      console.log(`[boot] webhook já correto: ${expected}`);
+      info('boot.webhookOk', { url: expected });
       return;
     }
-    console.log(`[boot] webhook atual: ${current?.url || '(nenhum)'} → corrigindo`);
+    warn('boot.webhookDivergente', { atual: current?.url || '(nenhum)', esperado: expected });
     await setWebhook(expected);
     state.webhook = { ok: true, error: null, url: expected };
-    console.log(`[boot] webhook apontado para ${expected} (evento: MESSAGES_UPSERT)`);
+    info('boot.webhookCorrigido', { url: expected, eventos: 'MESSAGES_UPSERT' });
   } catch (e) {
     state.webhook.error = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
-    console.error('[boot] ✖ webhook:', state.webhook.error);
+    falha('boot.webhookFalhou', e);
   }
 }
 
@@ -112,7 +112,7 @@ async function initDependencies() {
 function startKeepalive() {
   const hours = num('KEEPALIVE_HOURS', 6);
   if (hours <= 0) {
-    console.log('[keepalive] desativado (KEEPALIVE_HOURS=0)');
+    info('keepalive.desativado', { motivo: 'KEEPALIVE_HOURS=0' });
     return;
   }
 
@@ -125,17 +125,17 @@ function startKeepalive() {
       state.keepalive.lastOk = new Date().toISOString();
       state.keepalive.lastError = null;
       state.keepalive.runs++;
-      console.log(`[keepalive] ok (${state.keepalive.runs}) — projeto Supabase ativo`);
+      info('keepalive.ok', { execucao: state.keepalive.runs });
     } catch (e) {
       state.keepalive.lastError = e.message;
-      console.error('[keepalive] falhou:', e.message);
+      falha('keepalive.falhou', e);
     }
   };
 
   const timer = setInterval(tick, hours * 3600_000);
   timer.unref?.();
   tick();   // uma vez já no boot
-  console.log(`[keepalive] ativo — consulta a cada ${hours}h`);
+  info('keepalive.ativo', { intervaloHoras: hours });
 }
 
 function buildApp() {
@@ -150,8 +150,43 @@ function buildApp() {
     ready: state.db.ok && state.whatsapp.ok,
     uptime: Math.round(process.uptime()),
     inflight: getInflight(),
+    config: {
+      rearmeHoras: num('REARM_HOURS', 24),
+      delayMs: [num('REPLY_DELAY_MIN_MS', 3000), num('REPLY_DELAY_MAX_MS', 5000)],
+      keepaliveHoras: num('KEEPALIVE_HOURS', 6),
+      fuso: str('TIMEZONE', 'America/Fortaleza')
+    },
+    caixaPreta: resumoCaixaPreta(),
     ...state
   }));
+
+  /**
+   * Ping público que TOCA o banco.
+   *
+   * Existe para que qualquer cron externo — GitHub Actions, cron-job.org,
+   * UptimeRobot — possa manter o projeto Supabase acordado sem precisar de
+   * credencial nenhuma. É a segunda camada anti-pause: a primeira (keepalive
+   * interno) morre junto com o container; esta não depende dele estar de pé
+   * por meses, só de alguém chamando a URL.
+   *
+   * Não expõe dado algum: devolve apenas se o banco respondeu.
+   */
+  let ultimoPing = 0;
+  app.get('/ping', async (_req, res) => {
+    const agora = Date.now();
+    try {
+      await keepalive();
+      // Registra no máximo a cada 5 min para o ping não afogar a caixa preta.
+      if (agora - ultimoPing > 300_000) {
+        ultimoPing = agora;
+        info('ping.externo', { banco: 'ok' });
+      }
+      res.json({ ok: true, db: true, at: new Date().toISOString() });
+    } catch (e) {
+      falha('ping.falhou', e);
+      res.status(503).json({ ok: false, db: false, erro: e.message });
+    }
+  });
 
   app.get('/', (_req, res) => res.redirect('/admin'));
 
@@ -165,11 +200,11 @@ function buildApp() {
 function listen(app, port) {
   return new Promise(resolve => {
     const server = app.listen(port, '0.0.0.0', () => {
-      console.log(`[boot] escutando na porta ${port}`);
+      info('boot.escutando', { porta: port });
       resolve(server);
     });
     server.on('error', err => {
-      console.warn(`[boot] porta ${port} indisponível (${err.code}) — seguindo`);
+      warn('boot.portaIndisponivel', { porta: port, codigo: err.code });
       resolve(null);
     });
   });
@@ -191,6 +226,18 @@ async function main() {
   }
 
   await initDependencies();
+
+  // Fora de ambiente de teste, o banco de produção não guarda dado de teste.
+  if (state.db.ok && str('NODE_ENV') !== 'test') {
+    try {
+      const apagados = await purgeTestes();
+      const total = Object.values(apagados).reduce((a, b) => a + b, 0);
+      if (total) info('boot.testesApagados', apagados);
+    } catch (e) {
+      falha('boot.purgeTestesFalhou', e);
+    }
+  }
+
   if (state.db.ok) startKeepalive();
 
   const base = PUBLIC_URL || `http://localhost:${PORT}`;

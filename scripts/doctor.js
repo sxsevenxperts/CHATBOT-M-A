@@ -55,9 +55,17 @@ if (process.env.SUPABASE_URL && supaKey) {
     else ok(`tabela "${t}" acessível (${count ?? 0} registros)`);
   }
 
-  const { error: colErr } = await sb.from('triages').select('subject,seen').limit(1);
-  if (colErr) bad(`colunas subject/seen ausentes: ${colErr.message}`, 'rode o setup.sql novamente (ele é idempotente)');
-  else ok('colunas subject e seen presentes');
+  const COLUNAS = 'subject,seen,intent,category,vehicle,service,need,level,period,date_pref,origin,recommended';
+  const { error: colErr } = await sb.from('triages').select(COLUNAS).limit(1);
+  if (colErr) bad(`colunas do contexto ausentes: ${colErr.message}`, 'rode o setup.sql novamente (ele é idempotente)');
+  else ok(`colunas do contexto presentes (${COLUNAS.split(',').length})`);
+
+  const { data: tz } = await sb.from('triages').select('created_at').limit(1);
+  if (tz && tz[0] && !/[Zz]|[+-]\d{2}:?\d{2}$/.test(String(tz[0].created_at))) {
+    bad('created_at sem fuso horário', 'rode o setup.sql: ele converte para TIMESTAMPTZ');
+  } else {
+    ok('created_at com fuso horário');
+  }
 } else {
   bad('Supabase não testado (faltam credenciais)');
 }

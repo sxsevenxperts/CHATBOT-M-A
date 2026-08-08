@@ -7,11 +7,13 @@ import fs from 'node:fs';
 import express from 'express';
 
 import {
-  getTriages, updateTriageStatus, getMessages, getStats, db, resetSession
+  getTriages, updateTriageStatus, getMessages, getStats, contarTestes,
+  purgeTestes, db, resetSession
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig
 } from './evolution.js';
+import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -139,7 +141,7 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     }
     const url = `${base}/webhook/messages`;
     const result = await setWebhook(url);
-    console.log(`[admin] webhook apontado para ${url}`);
+    info('admin.webhookSincronizado', { url });
     res.json({ ok: true, url, result });
   }));
 
@@ -147,9 +149,36 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
 
   api.get('/qr', wrap(async (_req, res) => res.json(await getQrCode())));
 
+  /**
+   * Filtros compartilhados por /triages, /stats e /messages.
+   *
+   * `ate` chega como o último dia desejado e vira o início do dia seguinte:
+   * comparar com `< dia+1` é o único jeito de incluir o dia inteiro sem
+   * depender do horário gravado.
+   */
+  function filtros(req) {
+    const dia = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+    const de = dia(req.query.de);
+    const ateDia = dia(req.query.ate);
+
+    let ate = null;
+    if (ateDia) {
+      const d = new Date(ateDia + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + 1);
+      ate = d.toISOString().slice(0, 10);
+    }
+
+    return {
+      de: de ? de + 'T00:00:00Z' : null,
+      ate: ate ? ate + 'T00:00:00Z' : null,
+      incluirTestes: req.query.testes === '1'
+    };
+  }
+
   api.get('/triages', wrap(async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
-    res.json(await getTriages(limit));
+    const f = filtros(req);
+    res.json(await getTriages({ ...f, limit }));
   }));
 
   api.put('/triages/:id', wrap(async (req, res) => {
@@ -173,18 +202,40 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   /** Devolve um número ao bot (desfaz o handoff). */
   api.post('/sessions/:phone/reactivate', wrap(async (req, res) => {
     await resetSession(req.params.phone);
-    console.log(`[admin] sessão de ${req.params.phone} reativada para o bot`);
+    info('admin.sessaoReativada', { de: req.params.phone });
     res.json({ ok: true });
   }));
 
   api.get('/messages', wrap(async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 120, 500);
-    res.json(await getMessages(limit));
+    const f = filtros(req);
+    res.json(await getMessages({ ...f, limit }));
   }));
 
-  api.get('/stats', wrap(async (_req, res) => res.json(await getStats())));
+  api.get('/stats', wrap(async (req, res) => {
+    const f = filtros(req);
+    const [stats, testes] = await Promise.all([
+      getStats(f),
+      contarTestes({ de: f.de, ate: f.ate })
+    ]);
+    res.json({ ...stats, testes });
+  }));
+
+  /** Apaga as conversas de teste, deixando só atendimento real. */
+  api.delete('/testes', wrap(async (_req, res) => {
+    const apagados = await purgeTestes();
+    info('admin.testesApagados', apagados);
+    res.json({ ok: true, apagados });
+  }));
+
+  /** Caixa preta: últimos eventos do sistema, para diagnosticar sem o console. */
+  api.get('/log', wrap(async (req, res) => {
+    const level = ['info', 'warn', 'error', 'all'].includes(req.query.level) ? req.query.level : 'all';
+    const limit = Math.min(Number(req.query.limit) || 120, 400);
+    res.json({ resumo: resumoEventos(), eventos: listarEventos({ level, limit }) });
+  }));
 
   app.use('/admin/api', api);
 
-  console.log('[admin] rotas registradas em /admin');
+  info('admin.rotas', { base: '/admin' });
 }

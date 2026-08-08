@@ -1,5 +1,5 @@
 -- ============================================================
--- M & A Lava a Jato - Setup do banco (rodar UMA vez no Supabase)
+-- M & A Lavagens e Estética - Setup do banco (rodar UMA vez no Supabase)
 -- SQL Editor: https://app.supabase.com/project/_/sql/new
 -- Idempotente: pode rodar de novo sem quebrar nada.
 -- ============================================================
@@ -67,6 +67,25 @@ BEGIN
     ALTER TABLE triages ALTER COLUMN updated_at SET DEFAULT NOW();
   END IF;
 END $$;
+
+-- Separa conversa real de teste: o painel de Solicitações mostra só o que é
+-- atendimento de verdade, e o boot apaga o resto.
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE messages     ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_triages_is_test      ON triages(is_test, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_is_test     ON messages(is_test, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_sessions_is_test ON bot_sessions(is_test);
+
+-- Contexto rico do fluxo de 6 etapas.
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS intent      VARCHAR(60);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS category    VARCHAR(40);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS level       VARCHAR(40);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS need        VARCHAR(120);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS period      VARCHAR(40);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS date_pref   VARCHAR(60);
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS origin      VARCHAR(30) DEFAULT 'chatbot';
+ALTER TABLE triages      ADD COLUMN IF NOT EXISTS recommended BOOLEAN DEFAULT FALSE;
 
 ALTER TABLE triages      ADD COLUMN IF NOT EXISTS subject    VARCHAR(200);
 ALTER TABLE triages      ADD COLUMN IF NOT EXISTS note       TEXT;

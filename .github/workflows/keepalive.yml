@@ -1,0 +1,38 @@
+name: Keepalive do Supabase
+
+# Segunda camada anti-pause, independente do servidor do cliente.
+#
+# O plano free do Supabase pausa projetos após 7 dias sem atividade e não
+# oferece como desligar isso. O app já faz keepalive interno a cada 6h, mas
+# ele morre junto com o container. Este workflow roda na infraestrutura do
+# GitHub: se o app cair por dias, o banco continua sendo tocado.
+#
+# /ping é público e não expõe dado nenhum — não precisa de secret.
+#
+# Atenção: o GitHub desativa workflows agendados em repositórios sem commits
+# por 60 dias. Se isso acontecer, basta reativar na aba Actions.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # a cada 6 horas
+  workflow_dispatch:          # permite disparar na mão
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Toca o banco pelo endpoint público
+        run: |
+          URL="https://startups-lavaajatoma.qfotry.easypanel.host/ping"
+          for tentativa in 1 2 3; do
+            CODIGO=$(curl -s -m 20 -o /tmp/resposta -w '%{http_code}' "$URL" || true)
+            echo "tentativa $tentativa → HTTP $CODIGO"
+            cat /tmp/resposta; echo
+            if [ "$CODIGO" = "200" ]; then
+              echo "banco acordado"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::ping falhou nas 3 tentativas — o app pode estar fora do ar"
+          exit 1
