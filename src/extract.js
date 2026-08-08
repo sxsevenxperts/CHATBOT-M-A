@@ -29,9 +29,10 @@ const NAME_PATTERNS = [
 ];
 
 const NOT_NAMES = new Set([
-  'sim', 'nao', 'ok', 'oi', 'ola', 'bom', 'boa', 'dia', 'tarde', 'noite', 'obrigado',
-  'obrigada', 'cliente', 'carro', 'moto', 'lavagem', 'valor', 'preco', 'agendar',
-  'hoje', 'amanha', 'sabado', 'domingo', 'quero', 'gostaria', 'queria'
+  'sim', 'nao', 'ok', 'oi', 'ola', 'ai', 'ei', 'opa', 'eae', 'eai', 'alo', 'hello', 'hi',
+  'bom', 'boa', 'dia', 'tarde', 'noite', 'obrigado', 'obrigada', 'blz', 'beleza',
+  'cliente', 'carro', 'moto', 'lavagem', 'valor', 'preco', 'agendar', 'oii', 'oie',
+  'hoje', 'amanha', 'sabado', 'domingo', 'quero', 'gostaria', 'queria', 'test', 'teste'
 ]);
 
 export function extractName(text) {
@@ -44,13 +45,20 @@ export function extractName(text) {
   return null;
 }
 
-/** Nome quando a pergunta foi "qual é o seu nome?" — aí a resposta É o nome. */
+/**
+ * Nome quando a pergunta foi "qual é o seu nome?" — aí a resposta É o nome.
+ *
+ * Rejeita saudação e interjeição: "Ai", "Oi", "Blz" não são nome. Um cliente
+ * que só disse "oi" recebe a pergunta de novo, em vez de ser chamado de "Oi"
+ * pelo resto da conversa — aconteceu num teste.
+ */
 export function nameFromAnswer(text) {
   const explicito = extractName(text);
   if (explicito) return explicito;
 
   const limpo = String(text).replace(/[^\p{L}\s'-]/gu, ' ').trim();
-  const palavras = limpo.split(/\s+/).filter(w => w.length > 1 && !NOT_NAMES.has(norm(w)));
+  // >2 letras: nome real tem ao menos três. "Ai"/"Oi" caem aqui e na lista.
+  const palavras = limpo.split(/\s+/).filter(w => w.length > 2 && !NOT_NAMES.has(norm(w)));
   if (!palavras.length || palavras.length > 4) return null;
   return cap(palavras.slice(0, 2).join(' '));
 }

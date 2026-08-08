@@ -167,9 +167,10 @@ console do container — invisível para quem opera.
 | `flow.handoff` | Triagem concluída — traz o número da triagem |
 | `flow.silenciado` | Cliente escreveu enquanto está com a atendente |
 | `flow.rearmado` | Passaram 24 h e o bot voltou a atender |
-| `whatsapp.caiu` | **ERRO** — a sessão do WhatsApp caiu; o bot parou de receber |
+| `whatsapp.oscilou` | Conexão vacilou — pode ser só uma piscada |
+| `whatsapp.piscou` | Voltou em menos de 90 s: oscilação, não pane |
+| `whatsapp.voltou` | Voltou depois de queda real, com minutos fora |
 | `whatsapp.reconectando` / `.precisaQr` | Tentativa automática de religar |
-| `whatsapp.voltou` | Reconectou, com quantos minutos ficou fora |
 | `keepalive.ok` / `.falhou` | Anti-pause do Supabase |
 | `ping.externo` | Cron externo tocou o banco |
 | `boot.*` | Banco, Evolution, webhook, portas, limpeza de testes |
@@ -269,7 +270,7 @@ vem com o conserto.
 npm test
 ```
 
-**203 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**208 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -327,6 +328,22 @@ O que existe é redução de risco e recuperação rápida:
 | Painel da conexão oficial | Migrar para a Cloud API da Meta pelo próprio dashboard |
 | **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
 | `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
+
+### Não empilhe remédios numa oscilação
+
+Lição paga em 08/08/2026. A conexão vacilou, e em vez de esperar eu reiniciei,
+forcei logout, repareei, troquei a imagem e reverti — cada passo descarta a
+credencial em uso e reembaralha a sessão. O que era uma piscada de segundos
+virou horas de instabilidade **causada pela intervenção**, não pela falha.
+
+Por isso o monitor agora separa `whatsapp.piscou` (< 90 s, ruído) de
+`whatsapp.voltou` (queda real). Regra de operação:
+
+1. **Piscou e voltou sozinho?** Não faça nada. O monitor religa.
+2. **Fora por minutos?** Aí sim: Conectar → Reiniciar → Desconectar e pareear,
+   um de cada vez, esperando entre eles.
+3. **Nunca** troque a imagem da Evolution com o atendimento no ar — a 2.4.0+
+   exige licença e derruba tudo (aconteceu). A v2.3.7 é a última livre.
 
 ### Quando a mensagem é aceita mas não chega
 

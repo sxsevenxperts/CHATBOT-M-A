@@ -132,19 +132,26 @@ function startConnectionMonitor() {
       };
 
       if (antes && !wa.connected) {
-        falha('whatsapp.caiu', new Error(`status ${wa.status}`), {
-          acao: 'tentando reconectar; se pedir QR, escaneie em /admin → Conexão'
-        });
+        // Marca o início; só vira "queda" registrada se persistir. Oscilação
+        // de segundos não é pane e não deve inflar a estatística.
+        warn('whatsapp.oscilou', { status: wa.status });
         registrarEventoConexao({
           instance: wa.name, event: 'caiu', status: wa.status,
           detalhe: 'detectado pelo monitor'
         }).catch(() => {});
       } else if (!antes && wa.connected) {
-        const min = caiuEm ? Math.round((Date.now() - new Date(caiuEm).getTime()) / 60000) : 0;
-        info('whatsapp.voltou', { numero: wa.ownerJid, foraDoArMin: min, tentativas });
+        const segundosFora = caiuEm ? Math.round((Date.now() - new Date(caiuEm).getTime()) / 1000) : 0;
+        const min = Math.round(segundosFora / 60);
+        // Piscada curta é ruído; queda de verdade é sinal.
+        if (segundosFora < 90) {
+          info('whatsapp.piscou', { segundosFora });
+        } else {
+          info('whatsapp.voltou', { numero: wa.ownerJid, foraDoArMin: min, tentativas });
+        }
         registrarEventoConexao({
           instance: wa.name, event: 'voltou', status: wa.status,
-          foraMin: min, tentativas
+          foraMin: min, tentativas,
+          detalhe: segundosFora < 90 ? `oscilação de ${segundosFora}s` : null
         }).catch(() => {});
 
         // Quem escreveu durante a queda não recebeu resposta e some em
