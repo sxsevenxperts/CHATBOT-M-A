@@ -216,6 +216,8 @@ try {
   m = ultima();
   /Sua preferência é/.test(m) ? ok('resume a preferência') : no('não resumiu a preferência', m);
   /Sábado/.test(m) && /manh/i.test(m) ? ok('preferência com dia e período') : no('preferência incompleta', m);
+  // norm() tira acentos: usá-lo para exibir gerava "Sábado pela manha".
+  /pela manhã/.test(m) ? ok('período acentuado na frase ("pela manhã")') : no('acento perdido na exibição', m);
   /Posso encaminhar seu atendimento/.test(m) ? ok('pede autorização para encaminhar') : no('não pediu autorização');
 
   /* ---------- 6 · Etapa 6: handoff ---------- */

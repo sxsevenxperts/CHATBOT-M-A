@@ -128,6 +128,13 @@ function menu(options) {
 
 const RODAPE_MENU = '\n\n_Responda com o número ou escreva do seu jeito._';
 
+/** Preposição correta de cada período dentro da frase de confirmação. */
+const PERIODO_NA_FRASE = {
+  'Manhã': 'pela manhã',
+  'Tarde': 'pela tarde',
+  'Final da tarde': 'no final da tarde'
+};
+
 /** "Jeep Compass" → "Compass", para a conversa soar natural. */
 function apelidoVeiculo(v) {
   if (!v) return 'seu veículo';
@@ -218,8 +225,9 @@ function pergunta(step, d) {
         return 'Posso encaminhar você para nossa atendente responder essa dúvida?\n\n' +
                menu(CONFIRM) + RODAPE_MENU;
       }
-      const quando = [d.date_pref, d.period && `pela ${norm(d.period).replace('final da tarde', 'final da tarde')}`]
-        .filter(Boolean).join(' ');
+      // norm() serve para COMPARAR, nunca para exibir: ele tira os acentos e
+      // a frase saía "Sábado pela manha".
+      const quando = [d.date_pref, PERIODO_NA_FRASE[d.period]].filter(Boolean).join(' ');
       return `Perfeito. Sua preferência é *${quando}*.\n\n` +
              'Posso encaminhar seu atendimento para nossa atendente verificar os horários disponíveis?\n\n' +
              menu(CONFIRM) + RODAPE_MENU;
