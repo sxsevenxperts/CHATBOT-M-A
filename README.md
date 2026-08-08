@@ -61,8 +61,17 @@ Horário: Seg–Sex 7h–18h · Sáb 7h–14h · Dom fechado (fuso `America/Fort
 
 `https://SEU-DOMINIO/admin` — protegido por senha (`ADMIN_PASSWORD`).
 
-Identidade visual derivada da logomarca: vermelho `#C61C29` (extraído da própria
-arte), grafite quente e serifada nos títulos.
+Identidade visual derivada da logomarca: vermelho `#C61C29` — extraído por
+amostragem de pixels da própria arte, não escolhido a olho — grafite quente e
+serifada nos títulos.
+
+A marca entra como **badge circular**. A arte traz "LAVAGENS E ESTÉTICA" em
+vermelho escuro, que desaparece sobre fundo escuro; o disco branco embutido
+devolve o contraste sem redesenhar nada. Para regerar os assets:
+
+```bash
+python3 scripts/brand.py brand/logo-original.jpg
+```
 
 | Recurso | O que faz |
 |---|---|
@@ -164,7 +173,12 @@ src/
   admin.js      rotas do dashboard (/admin)
 public/
   admin.html    dashboard (autocontido, sem CDN)
-  logo.png      logomarca sem fundo · mark.png, favicon.png, apple-touch-icon.png
+  badge.png     badge circular da marca (hero e header)
+  logo.png      lockup horizontal sem fundo · favicon.png, apple-touch-icon.png
+brand/
+  logo-original.jpg   arte de origem
+scripts/
+  brand.py      regenera todos os assets a partir da arte
 scripts/
   doctor.js     diagnóstico
   e2e.js        testes
