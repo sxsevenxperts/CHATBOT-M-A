@@ -1,5 +1,6 @@
 import { handleMessage } from './flow.js';
 import { info, warn, falha } from './recorder.js';
+import { serializar, filasAbertas } from './serial.js';
 
 /**
  * Recebe os webhooks MESSAGES_UPSERT da Evolution API v2.
@@ -20,6 +21,7 @@ const WEBHOOK_PATH = '/webhook/messages';
 // /health e permite que os testes esperem a quiescência em vez de chutar sleeps.
 let inflight = 0;
 export const getInflight = () => inflight;
+export { filasAbertas };
 
 const seenIds = new Set();
 const SEEN_MAX = 2000;
@@ -117,9 +119,10 @@ export function setupWebhook(app) {
 
         info('webhook.recebido', { de: phone, perfil: pushName || '—', texto: text || '[sem texto]' });
 
-        // Sequencial de propósito: duas mensagens do mesmo cliente no mesmo
-        // lote precisam avançar o fluxo em ordem.
-        await handleMessage({ phone, text, pushName });
+        // Serializado por telefone: duas mensagens do mesmo cliente chegando
+        // juntas precisam avançar o fluxo em ordem, não em paralelo. Números
+        // diferentes seguem simultâneos.
+        await serializar(phone, () => handleMessage({ phone, text, pushName }));
       }
     }
   }

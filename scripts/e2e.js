@@ -376,6 +376,45 @@ try {
     gap >= 250 && gap < 2500 ? ok(`delay aplicado: ${gap}ms (250–350ms + latência do banco)`) : no(`delay fora do esperado: ${gap}ms`);
   } else ok('sem resposta (cliente já em handoff) — delay verificado nas etapas acima');
 
+  /* ---------- 11a · Corrida no mesmo número ---------- */
+  head('11a · Duas mensagens do mesmo número ao mesmo tempo');
+  {
+    const R = '5588000000778';
+    await sb.from('triages').delete().eq('phone', R);
+    await sb.from('bot_sessions').delete().eq('phone', R);
+    await sb.from('messages').delete().eq('phone', R);
+
+    const antes = sent.length;
+    // No WhatsApp é normal mandar "oi" e o nome sem esperar resposta. Sem
+    // serialização por telefone, as duas liam a mesma sessão: o cliente
+    // recebia as boas-vindas duas vezes e o nome era descartado.
+    const crua = (texto, id) => fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 'messages.upsert', instance: '3041',
+        data: {
+          key: { remoteJid: `${R}@s.whatsapp.net`, fromMe: false, id },
+          pushName: 'Sergio', message: { conversation: texto },
+          messageType: 'conversation', messageTimestamp: Math.floor(Date.now()/1000)
+        }
+      })
+    });
+    await Promise.all([crua('oi', 'RACE-A'), crua('Sérgio', 'RACE-B')]);
+    await quiesce();
+
+    const respostas = sent.slice(antes).filter(x => x.number === R).map(x => x.text);
+    const boasVindas = respostas.filter(t => /qual é o seu nome/i.test(t)).length;
+    boasVindas <= 1 ? ok('não repetiu a pergunta do nome') : no(`perguntou o nome ${boasVindas} vezes`);
+
+    const sess = await sessaoDe(R);
+    sess?.data?.name === 'Sérgio' ? ok('a segunda mensagem não foi perdida (nome capturado)') : no(`nome: ${sess?.data?.name}`);
+    sess?.step === 'ask_intent' ? ok('fluxo avançou em ordem') : no(`passo: ${sess?.step}`);
+
+    await sb.from('triages').delete().eq('phone', R);
+    await sb.from('bot_sessions').delete().eq('phone', R);
+    await sb.from('messages').delete().eq('phone', R);
+  }
+
   /* ---------- 11b · matchOption com texto livre ---------- */
   head('11b · Reconhecimento de resposta livre nos menus');
   {

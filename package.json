@@ -12,7 +12,8 @@
     "dev": "node --watch src/index.js",
     "check": "node --check src/index.js && node --check src/flow.js && node --check src/webhook.js && node --check src/admin.js && node --check src/evolution.js && node --check src/database.js",
     "doctor": "node scripts/doctor.js",
-    "test": "node scripts/e2e.js"
+    "test": "node scripts/e2e.js",
+    "carga": "node scripts/carga.js"
   },
   "keywords": [
     "whatsapp",

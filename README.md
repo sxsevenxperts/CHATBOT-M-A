@@ -251,7 +251,7 @@ vem com o conserto.
 npm test
 ```
 
-**140 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**143 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -259,6 +259,32 @@ de testes, autenticação e assets da marca.
 
 Sobe uma Evolution **falsa** — nenhuma mensagem real é enviada — usa o Supabase
 de verdade, declara seus próprios números em `TEST_PHONES` e apaga tudo no final.
+
+### Carga
+
+```bash
+npm run carga        # 40 conversas simultâneas
+npm run carga 100
+```
+
+Mede vazão, integridade sob carga, corrida no mesmo número e o volume de dados
+gerado por conversa. Medido em 08/08/2026, 40 conversas de 10 mensagens:
+
+| | |
+|---|---|
+| Vazão | ~40 mensagens/s |
+| Por mensagem | ~25 ms |
+| Simultâneas no pico | 40 |
+| Triagens íntegras | 40/40, zero duplicadas |
+| Dados | 2,5 KB por conversa · ~7 MB/mês a 100 conversas/dia |
+
+**O gargalo não é a aplicação, é o WhatsApp.** Uma instância Baileys, um número:
+o limite prático de envio da Meta chega muito antes dos 40 msg/s. Para volume
+maior, o caminho é mais números/instâncias, não mais CPU.
+
+Duas coisas dependem de `replicas = 1`: a deduplicação de reentrega e a fila
+por telefone são **em memória**. Escalar horizontalmente exige mover as duas
+para o banco — está anotado, não feito.
 
 ---
 
@@ -302,6 +328,7 @@ src/
   database.js   Supabase: triagens, sessões, mensagens, filtros, keepalive, purge
   admin.js      rotas do dashboard
   recorder.js   caixa preta
+  serial.js     fila por telefone (evita corrida na mesma conversa)
   testflag.js   decide o que é conversa de teste
   env.js        carrega o .env antes dos outros módulos
 public/
@@ -312,6 +339,7 @@ brand/
 scripts/
   doctor.js     diagnóstico
   e2e.js        testes
+  carga.js      vazão, concorrência e volume
   brand.py      regenera os assets da marca
 .github/workflows/
   keepalive.yml segunda camada anti-pause
@@ -370,3 +398,4 @@ verificação — não reintroduza.
 | `is_test` só na triagem | Sessão de teste sobrevivia à limpeza | Precisa marcar também em `bot_sessions` e `messages` |
 | Aspas duplas em `--body` do `gh` | Comando some no shell | Crases viram substituição de comando; use heredoc |
 | Data local comparada com limite UTC | Mensagem das 22h caía no dia seguinte | Sobral é UTC−3: 00:00 local é 03:00Z |
+| Sem fila por telefone | "oi" + nome juntos → boas-vindas duas vezes e nome perdido | As duas mensagens liam a mesma sessão em paralelo |
