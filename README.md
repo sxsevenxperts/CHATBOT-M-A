@@ -99,7 +99,7 @@ escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
 |---|---|
 | Notificação | Som, notificação do navegador, badge e destaque na linha a cada nova solicitação |
 | Solicitações | Cliente, veículo, serviço, nível, preferência, quando chegou, situação |
-| **Filtro de período** | Hoje · Ontem · 7 dias · 30 dias · Tudo, ou **datas personalizadas** (de / até) |
+| **Filtro de período** | Hoje · Ontem · 7 dias · 30 dias · Tudo, ou **datas personalizadas** (de / até). Os dias são do fuso da loja, não do UTC: uma mensagem das 22h fica no dia certo |
 | Cartão de contexto | Clique na linha: o bloco completo que a atendente precisa, com **Copiar contexto** e a próxima ação sugerida |
 | Situação | Aguardando → Em atendimento → Concluída / Descartada |
 | Reativar bot | Devolve um número à triagem automática antes das 24 h |
@@ -251,11 +251,11 @@ vem com o conserto.
 npm test
 ```
 
-**136 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**140 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
-caixa preta, ping, filtro de período, ocultação e limpeza de testes,
-autenticação e assets da marca.
+caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
+de testes, autenticação e assets da marca.
 
 Sobe uma Evolution **falsa** — nenhuma mensagem real é enviada — usa o Supabase
 de verdade, declara seus próprios números em `TEST_PHONES` e apaga tudo no final.
@@ -343,8 +343,8 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `GET` | `/admin/api/build` | Selo do build |
 
-`de` e `ate` são datas `YYYY-MM-DD`; `ate` inclui o dia inteiro. Data inválida é
-ignorada em vez de quebrar a rota.
+`de` e `ate` são datas `YYYY-MM-DD` **no fuso da loja** (`TIMEZONE`); `ate`
+inclui o dia inteiro. Data inválida é ignorada em vez de quebrar a rota.
 
 ---
 
@@ -369,3 +369,4 @@ verificação — não reintroduza.
 | Palavra compartilhada nos menus | "quero lavagem" não era entendido | "quero" empatava as opções — hoje há lista de ruído e sinônimos |
 | `is_test` só na triagem | Sessão de teste sobrevivia à limpeza | Precisa marcar também em `bot_sessions` e `messages` |
 | Aspas duplas em `--body` do `gh` | Comando some no shell | Crases viram substituição de comando; use heredoc |
+| Data local comparada com limite UTC | Mensagem das 22h caía no dia seguinte | Sobral é UTC−3: 00:00 local é 03:00Z |
