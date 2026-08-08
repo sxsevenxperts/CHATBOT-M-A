@@ -121,6 +121,7 @@ escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
 | Conexão | Status · **Conectar / Gerar QR** · **Reiniciar instância** · **Desconectar e pareear** · **Retomar conversas** · **Sincronizar webhook** — tudo sem abrir o Evolution Manager |
 | Caixa preta | Últimos eventos do sistema, com filtro por nível |
 | **Estabilidade da conexão** | Quedas, tempo fora, maior queda e disponibilidade em 24h / 7 / 30 dias — **sobrevive a deploy**, ao contrário da caixa preta |
+| **Entrega** | Pílula no topo e status por mensagem: `⏳ enviando` · `✓ no servidor` · `✓✓ entregue` · `✓✓ lida`. Alarme quando os envios param de confirmar |
 
 Para regerar os assets da marca a partir da arte:
 
@@ -167,6 +168,9 @@ console do container — invisível para quem opera.
 | `flow.handoff` | Triagem concluída — traz o número da triagem |
 | `flow.silenciado` | Cliente escreveu enquanto está com a atendente |
 | `flow.rearmado` | Passaram 24 h e o bot voltou a atender |
+| `webhook.ack` | Confirmação de entrega de uma mensagem enviada |
+| `entrega.falhando` | **ERRO** — envios aceitos sem confirmação de entrega |
+| `entrega.normalizou` | A entrega voltou a confirmar |
 | `whatsapp.oscilou` | Conexão vacilou — pode ser só uma piscada |
 | `whatsapp.piscou` | Voltou em menos de 90 s: oscilação, não pane |
 | `whatsapp.voltou` | Voltou depois de queda real, com minutos fora |
@@ -270,7 +274,7 @@ vem com o conserto.
 npm test
 ```
 
-**208 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
+**221 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
 de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
 antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
 caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
@@ -344,6 +348,28 @@ Por isso o monitor agora separa `whatsapp.piscou` (< 90 s, ruído) de
    um de cada vez, esperando entre eles.
 3. **Nunca** troque a imagem da Evolution com o atendimento no ar — a 2.4.0+
    exige licença e derruba tudo (aconteceu). A v2.3.7 é a última livre.
+
+### Aceite não é entrega — a lição que custou mais caro
+
+`sendText` responder `status: PENDING` significa apenas que **a Evolution
+aceitou**. Não diz nada sobre a mensagem ter chegado. Em 08/08/2026 tratei uma
+coisa como a outra e passei horas achando que o envio funcionava enquanto o
+cliente não recebia nada.
+
+Agora cada envio guarda o `wa_id` da mensagem, o webhook escuta
+`MESSAGES_UPDATE` e o ACK evolui o status:
+
+```
+⏳ PENDING  →  ✓ SERVER_ACK  →  ✓✓ DELIVERY_ACK  →  ✓✓ READ
+   aceito       no servidor        no celular         lida
+```
+
+Se nada dos últimos 30 min chegar a `DELIVERY_ACK`, o dashboard levanta alarme
+vermelho e a caixa preta grava `entrega.falhando`. **A falha silenciosa deixou
+de ser silenciosa** — é o que permite afirmar que o bot funciona em vez de supor.
+
+`npm run doctor` também checa isso, e reclama se `MESSAGES_UPDATE` não estiver
+habilitado no webhook.
 
 ### Quando a mensagem é aceita mas não chega
 
@@ -474,6 +500,7 @@ Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
 | `GET` | `/admin/api/stats` | Números do topo — mesmos filtros |
 | `GET` | `/admin/api/log` | Caixa preta em memória (`?level=error`) |
 | `GET` | `/admin/api/conexao/historico` | Quedas persistidas (`?dias=7`) |
+| `GET` | `/admin/api/entrega` | Confirmações de entrega (`?minutos=30`) |
 | `GET` | `/admin/api/qr` | QR Code para reconectar |
 | `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
 | `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
@@ -513,4 +540,5 @@ verificação — não reintroduza.
 | Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
 | Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
 | Histórico de quedas só em memória | Impossível responder "quantas vezes caiu?" — o anel zera a cada deploy | Faltava persistir em `connection_events` |
+| Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE` |
 | `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |

@@ -43,12 +43,14 @@ mock.get('/instance/fetchInstances', (_q, r) => r.json([{
 }]));
 mock.post('/chat/sendPresence/:i', (q, r) => { presences.push(q.body); r.json({ ok: true }); });
 mock.post('/message/sendText/:i', (q, r) => {
-  sent.push({ number: q.body.number, text: q.body.text, at: Date.now() });
+  const waId = 'MOCK' + (sent.length + 1);
+  sent.push({ number: q.body.number, text: q.body.text, at: Date.now(), waId });
   console.log(`  \x1b[90m↗ ${q.body.number}: ${String(q.body.text).split('\n')[0].slice(0,64)}…\x1b[0m`);
-  r.json({ key: { id: 'MOCK' + sent.length } });
+  r.json({ key: { id: waId }, status: 'PENDING' });
 });
 mock.get('/webhook/find/:i', (_q, r) => r.json({
-  enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`, events: ['MESSAGES_UPSERT']
+  enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`,
+  events: ['MESSAGES_UPSERT', 'MESSAGES_UPDATE']
 }));
 mock.post('/webhook/set/:i', (q, r) => r.json({ ...q.body.webhook }));
 let restarts = 0;
@@ -122,6 +124,16 @@ async function diz(texto, { de = A, fromMe = false, jid = null, id = null, pushN
         messageType: 'conversation', messageTimestamp: Math.floor(Date.now()/1000)
       }
     })
+  });
+  await quiesce();
+}
+
+/** Simula o ACK de entrega que a Evolution manda em MESSAGES_UPDATE. */
+async function ack(waId, status) {
+  await fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event: 'messages.update', instance: '3041',
+                           data: { keyId: waId, status } })
   });
   await quiesce();
 }
@@ -780,6 +792,58 @@ try {
     for (const t of ['messages','bot_sessions','triages']) {
       await sb.from(t).delete().in('phone', [P, Q]);
     }
+  }
+
+  /* ---------- 12g · Entrega: aceite não é entrega ---------- */
+  head('12g · Rastreio de ENTREGA (o que faltava para saber se funciona)');
+  {
+    const auth = { headers: { Authorization: 'Bearer ' + token } };
+    const E = '5588000000803';
+    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', E);
+    await sb.from('bot_sessions').insert([{ phone: E, step: 'ask_name', data: { phone: E },
+                                           handed_off: false, is_test: true }]);
+
+    // O bot responde e o id do WhatsApp tem de ser guardado.
+    const antes = sent.length;
+    await diz('oi', { de: E });
+    const enviada = sent.slice(antes).find(x => x.number === E);
+    enviada?.waId ? ok(`envio devolveu o id do WhatsApp (${enviada.waId})`) : no('sem waId no envio');
+
+    const { data: reg } = await sb.from('messages').select('wa_id,status')
+      .eq('phone', E).eq('direction','out').order('created_at', { ascending: false }).limit(1);
+    reg?.[0]?.wa_id === enviada?.waId ? ok('id gravado na mensagem') : no(`wa_id gravado: ${reg?.[0]?.wa_id}`);
+    reg?.[0]?.status === 'PENDING' ? ok('status inicial PENDING (aceito, não entregue)') : no(`status: ${reg?.[0]?.status}`);
+
+    // Chega o ACK: a mensagem promove para entregue.
+    await ack(enviada.waId, 'DELIVERY_ACK');
+    const { data: dep } = await sb.from('messages').select('status,status_at')
+      .eq('wa_id', enviada.waId).limit(1);
+    dep?.[0]?.status === 'DELIVERY_ACK' ? ok('ACK de entrega promove o status') : no(`status após ACK: ${dep?.[0]?.status}`);
+    dep?.[0]?.status_at ? ok('registra quando confirmou') : no('sem status_at');
+
+    // Leitura também sobe o status.
+    await ack(enviada.waId, 'READ');
+    const { data: lida } = await sb.from('messages').select('status').eq('wa_id', enviada.waId).limit(1);
+    lida?.[0]?.status === 'READ' ? ok('ACK de leitura registrado') : no(`status: ${lida?.[0]?.status}`);
+
+    // ACK de id desconhecido não pode explodir.
+    await ack('NAO-EXISTE-999', 'DELIVERY_ACK');
+    ok('ACK de id desconhecido é ignorado sem erro');
+
+    const ent = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, auth)).json();
+    typeof ent.enviadas === 'number' ? ok(`resumo de entrega responde (${ent.entregues}/${ent.enviadas})`) : no('resumo não respondeu');
+    'saudavel' in ent ? ok('resumo diz se está saudável (ou null sem dado)') : no('sem veredito');
+
+    const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
+    page.includes('pillEnt') ? ok('pílula de entrega no topo do dashboard') : no('pílula ausente');
+    page.includes('NÃO estão sendo entregues') ? ok('alarme de entrega falhando na página') : no('alarme ausente');
+    page.includes('entregue') ? ok('status por mensagem no fluxo') : no('status por mensagem ausente');
+
+    const logAck = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
+    (logAck.eventos || []).some(e => e.event === 'webhook.ack')
+      ? ok('caixa preta registra os ACKs') : no('ACK não registrado na caixa preta');
+
+    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', E);
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */

@@ -2,7 +2,9 @@ import './env.js';                 // carrega o .env antes de tudo
 import { str, num } from './env.js';
 import express from 'express';
 
-import { initSupabase, keepalive, purgeTestes, registrarEventoConexao } from './database.js';
+import {
+  initSupabase, keepalive, purgeTestes, registrarEventoConexao, resumoEntrega
+} from './database.js';
 import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
 import { retomarConversas } from './flow.js';
 import { setupAdmin } from './admin.js';
@@ -30,6 +32,7 @@ const state = {
   db: { ok: false, error: null },
   keepalive: { enabled: false, everyHours: null, lastOk: null, lastError: null, runs: 0 },
   whatsapp: { ok: false, error: null, info: null, caiuEm: null, tentativas: 0, precisaQr: false },
+  entrega: { saudavel: null, enviadas: 0, entregues: 0, semConfirmacao: 0, checadoEm: null },
   webhook: { ok: false, error: null, url: null },
   env: {}
 };
@@ -196,6 +199,35 @@ function startConnectionMonitor() {
   const timer = setInterval(tick, segundos * 1000);
   timer.unref?.();
   info('monitor.ativo', { intervaloSegundos: segundos });
+
+  /**
+   * Vigia a ENTREGA, não o aceite.
+   *
+   * A Evolution pode responder PENDING e o WhatsApp engolir a mensagem. Foi o
+   * que aconteceu em 08/08/2026 e ficou horas invisível. Se nada dos últimos
+   * 30 min confirmou entrega, isso agora vira ERRO na cara de quem opera.
+   */
+  const vigiaEntrega = async () => {
+    try {
+      const r = await resumoEntrega({ minutos: 30 });
+      const antes = state.entrega.saudavel;
+      state.entrega = { ...r, checadoEm: new Date().toISOString() };
+
+      if (r.saudavel === false && antes !== false) {
+        falha('entrega.falhando', new Error(`${r.semConfirmacao} mensagens sem confirmação`), {
+          enviadas: r.enviadas, entregues: r.entregues,
+          acao: 'a Evolution aceita mas o WhatsApp não entrega — use "Desconectar e pareear"'
+        });
+      } else if (r.saudavel === true && antes === false) {
+        info('entrega.normalizou', { entregues: r.entregues, enviadas: r.enviadas });
+      }
+    } catch (e) {
+      falha('entrega.checagemFalhou', e);
+    }
+  };
+  const t2 = setInterval(vigiaEntrega, Math.max(segundos, 60) * 1000);
+  t2.unref?.();
+  vigiaEntrega();
 }
 
 /**
@@ -248,6 +280,7 @@ function buildApp() {
     uptime: Math.round(process.uptime()),
     inflight: getInflight(),
     filasPorTelefone: filasAbertas(),
+    entrega: state.entrega,
     config: {
       rearmeHoras: num('REARM_HOURS', 24),
       delayMs: [num('REPLY_DELAY_MIN_MS', 3000), num('REPLY_DELAY_MAX_MS', 5000)],

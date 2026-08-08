@@ -100,12 +100,61 @@ export async function marcarRetomada(phone) {
 
 /* ---------------- Mensagens ---------------- */
 
-export async function logMessage(phone, direction, body) {
+export async function logMessage(phone, direction, body, waId = null, status = null) {
   // Log é observabilidade: nunca deve derrubar o atendimento.
-  const { error } = await db()
-    .from('messages')
-    .insert([{ phone, direction, body, is_test: isTestPhone(phone) }]);
+  const { error } = await db().from('messages').insert([{
+    phone, direction, body,
+    is_test: isTestPhone(phone),
+    wa_id: waId,
+    status,
+    status_at: status ? new Date().toISOString() : null
+  }]);
   if (error) warn('db.logMensagemFalhou', { erro: error.message });
+}
+
+/** ACK de entrega chegou: promove o status da mensagem. */
+export async function atualizarStatusMensagem(waId, status) {
+  if (!waId || !status) return false;
+  const { data, error } = await db().from('messages')
+    .update({ status, status_at: new Date().toISOString() })
+    .eq('wa_id', waId).select('id');
+  if (error) { warn('db.statusMensagemFalhou', { erro: error.message }); return false; }
+  return (data || []).length > 0;
+}
+
+/**
+ * As mensagens que saíram estão realmente CHEGANDO?
+ *
+ * Aceite não é entrega. Este resumo é o detector da falha silenciosa que
+ * consumiu 08/08/2026: envio aceito com PENDING e nada no celular do cliente.
+ */
+const ENTREGUES = ['DELIVERY_ACK', 'READ', 'PLAYED'];
+
+export async function resumoEntrega({ minutos = 30 } = {}) {
+  const desde = new Date(Date.now() - minutos * 60_000).toISOString();
+  // Dá um tempo de graça: ACK não chega no mesmo instante.
+  const maduro = new Date(Date.now() - 120_000).toISOString();
+
+  const { data, error } = await db().from('messages')
+    .select('status, created_at')
+    .eq('direction', 'out').eq('is_test', false)
+    .gte('created_at', desde);
+  if (error) throw error;
+
+  const todas = data || [];
+  const antigas = todas.filter(m => m.created_at < maduro);
+  const entregues = todas.filter(m => ENTREGUES.includes(m.status)).length;
+  const semAck = antigas.filter(m => !m.status || m.status === 'PENDING').length;
+
+  return {
+    minutos,
+    enviadas: todas.length,
+    entregues,
+    noServidor: todas.filter(m => m.status === 'SERVER_ACK').length,
+    semConfirmacao: semAck,
+    // null = sem dado suficiente para julgar. false = está engolindo.
+    saudavel: antigas.length === 0 ? null : entregues > 0
+  };
 }
 
 export async function getMessages({ limit = 100, incluirTestes = false, de = null, ate = null } = {}) {
