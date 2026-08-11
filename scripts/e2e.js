@@ -13,6 +13,7 @@
  */
 import express from 'express';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
@@ -20,9 +21,32 @@ dotenv.config();
 
 const MOCK_PORT = 4010;
 const APP_PORT = 4011;
-const A = '5588000000091';   // cliente do fluxo guiado
-const B = '5588000000092';   // cliente que já diz tudo na primeira mensagem
-const C = '5588000000093';   // cliente com dúvida solta
+const RUN_TOKEN = crypto.randomBytes(6).toString('hex');
+const TEST_INSTANCE = `e2e-${RUN_TOKEN}-${process.pid}`;
+const WEBHOOK_TEST_SECRET = `e2e-webhook-${RUN_TOKEN}`;
+const ADMIN_TEST_PASSWORD = `e2e-admin-${RUN_TOKEN}`;
+const RUN_SUFFIX = (BigInt(`0x${RUN_TOKEN}`) % 10_000_000_000n).toString().padStart(10, '0');
+// Começa com zero e excede E.164 de propósito: nunca pode colidir com um
+// cliente real, mesmo usando temporariamente o Supabase de produção.
+const FIXTURE_PREFIX = `000${RUN_SUFFIX}`;
+const fixturePhone = slot => `${FIXTURE_PREFIX}${String(slot).padStart(4, '0')}`;
+const A = fixturePhone(91);   // cliente do fluxo guiado
+const B = fixturePhone(92);   // cliente que já diz tudo na primeira mensagem
+const C = fixturePhone(93);   // cliente com dúvida solta
+const D = fixturePhone(94);   // sessão legada
+const TZ_PHONE = fixturePhone(777);
+const RACE_PHONE = fixturePhone(778);
+const P = fixturePhone(801);
+const Q = fixturePhone(802);
+const E = fixturePhone(803);
+const F = fixturePhone(812);
+const F2 = fixturePhone(813);
+const F3 = fixturePhone(814);
+const F4 = fixturePhone(815);
+const FIXTURE_PHONES = [
+  A, B, C, D, TZ_PHONE, RACE_PHONE, P, Q, E, F, F2, F3, F4,
+  `__ch_${TEST_INSTANCE.slice(0, 14)}`
+];
 
 const sent = [];
 const presences = [];
@@ -37,58 +61,148 @@ const mock = express();
 mock.use(express.json());
 mock.get('/', (_q, r) => r.json({ version: '2.3.7-mock' }));
 let statusMock = 'open';
-mock.get('/instance/fetchInstances', (_q, r) => r.json([{
-  name: '3041', connectionStatus: statusMock,
-  ownerJid: '558881553041@s.whatsapp.net', profileName: 'SX (mock)'
-}]));
-mock.post('/chat/sendPresence/:i', (q, r) => { presences.push(q.body); r.json({ ok: true }); });
+let atrasoBootMs = 800;
+const instanciaValida = (q, r) => {
+  if (q.params.i === TEST_INSTANCE) return true;
+  r.status(404).json({ error: 'instância de teste incorreta' });
+  return false;
+};
+mock.get('/instance/fetchInstances', async (_q, r) => {
+  const espera = atrasoBootMs;
+  atrasoBootMs = 0;
+  if (espera) await new Promise(resolve => setTimeout(resolve, espera));
+  r.json([{
+  name: TEST_INSTANCE, connectionStatus: statusMock,
+  ownerJid: '558881553041@s.whatsapp.net', profileName: 'SX (mock)',
+  token: 'e2e-evolution-key'
+  }]);
+});
+mock.post('/chat/sendPresence/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
+  presences.push(q.body); r.json({ ok: true });
+});
+let earlyAckNext = null;
 mock.post('/message/sendText/:i', (q, r) => {
-  const waId = 'MOCK' + (sent.length + 1);
+  if (!instanciaValida(q, r)) return;
+  const waId = `${TEST_INSTANCE}-MOCK-${sent.length + 1}`;
   sent.push({ number: q.body.number, text: q.body.text, at: Date.now(), waId });
   console.log(`  \x1b[90m↗ ${q.body.number}: ${String(q.body.text).split('\n')[0].slice(0,64)}…\x1b[0m`);
+  if (earlyAckNext) {
+    const status = earlyAckNext;
+    earlyAckNext = null;
+    // Publica o ACK antes de devolver o HTTP do sendText. É a corrida real
+    // que antes perdia definitivamente a confirmação.
+    fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-evolution-webhook-secret': WEBHOOK_TEST_SECRET },
+      body: JSON.stringify({ event: 'messages.update', instance: TEST_INSTANCE,
+                             data: { keyId: waId, status } })
+    }).catch(() => {});
+    return setTimeout(() => r.json({ key: { id: waId }, status: 'PENDING' }), 180);
+  }
   r.json({ key: { id: waId }, status: 'PENDING' });
 });
 // Começa SEM MESSAGES_UPDATE: o boot tem de perceber e corrigir.
 let webhookEventos = ['MESSAGES_UPSERT'];
-mock.get('/webhook/find/:i', (_q, r) => r.json({
+let webhookHeaders = null;
+mock.get('/webhook/find/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
+  r.json({
   enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`,
-  events: webhookEventos
-}));
+  events: webhookEventos, headers: webhookHeaders
+  });
+});
 mock.post('/webhook/set/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
   webhookEventos = q.body.webhook?.events || webhookEventos;
+  webhookHeaders = q.body.webhook?.headers || null;
   r.json({ ...q.body.webhook });
 });
 let restarts = 0;
-mock.get('/instance/connect/:i', (_q, r) => r.json(
+mock.get('/instance/connect/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
+  r.json(
   statusMock === 'open' ? { base64: null, pairingCode: null, code: null }
                         : { base64: 'data:image/png;base64,QUJD', pairingCode: null, code: 'x' }
-));
-mock.post('/instance/restart/:i', (_q, r) => { restarts++; r.json({ ok: true }); });
+  );
+});
+mock.post('/instance/restart/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
+  restarts++; r.json({ ok: true });
+});
 let logouts = 0;
-mock.delete('/instance/logout/:i', (_q, r) => { logouts++; statusMock = 'close'; r.json({ status: 'SUCCESS' }); });
+mock.delete('/instance/logout/:i', (q, r) => {
+  if (!instanciaValida(q, r)) return;
+  logouts++; statusMock = 'close'; r.json({ status: 'SUCCESS' });
+});
 const criadas = [];
 mock.post('/instance/create', (q, r) => { criadas.push(q.body); r.json({ instance: { instanceName: q.body.instanceName } }); });
-const mockServer = mock.listen(MOCK_PORT);
+
+const TEST_SUPABASE_URL = process.env.SUPABASE_TEST_URL || process.env.SUPABASE_URL;
+const TEST_SUPABASE_KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const USA_BANCO_COMPARTILHADO = !process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_SERVICE_KEY;
+const envTesteFaltando = [
+  !TEST_SUPABASE_URL && 'SUPABASE_TEST_URL (ou SUPABASE_URL)',
+  !TEST_SUPABASE_KEY && 'SUPABASE_TEST_SERVICE_KEY (ou SUPABASE_SERVICE_KEY)'
+].filter(Boolean);
+if (envTesteFaltando.length) {
+  throw new Error(`E2E não iniciado: faltam ${envTesteFaltando.join(', ')}`);
+}
+if (USA_BANCO_COMPARTILHADO && process.env.E2E_ALLOW_SHARED_SUPABASE !== 'I_UNDERSTAND') {
+  throw new Error(
+    'E2E bloqueado: configure SUPABASE_TEST_URL/SUPABASE_TEST_SERVICE_KEY ou confirme ' +
+    'explicitamente E2E_ALLOW_SHARED_SUPABASE=I_UNDERSTAND'
+  );
+}
+
+let mockServer = null;
+let app = null;
+let sb = createClient(TEST_SUPABASE_URL, TEST_SUPABASE_KEY, { auth: { persistSession: false } });
+let MESSAGES_HAS_INSTANCE = true;
+let appLog = '';
+let limpar = async () => {};
+let limparEventosTeste = async () => {};
+
+const { error: instanceProbeError } = await sb.from('messages')
+  .select('instance', { count: 'exact', head: true });
+if (instanceProbeError) throw new Error(`E2E exige setup.sql atualizado: ${instanceProbeError.message}`);
+const { data: schemaVersion, error: schemaVersionError } = await sb.rpc('chatbot_schema_version');
+if (schemaVersionError || Number(schemaVersion) !== 2026080801) {
+  throw new Error(`E2E exige schema 2026080801: ${schemaVersionError?.message || schemaVersion}`);
+}
+
+try {
+mockServer = await new Promise((resolve, reject) => {
+  const server = mock.listen(MOCK_PORT, () => resolve(server));
+  server.once('error', reject);
+});
 
 /* ---------------- App sob teste ---------------- */
-const app = spawn(process.execPath, ['src/index.js'], {
+app = spawn(process.execPath, ['src/index.js'], {
   env: {
     ...process.env,
+    SUPABASE_URL: TEST_SUPABASE_URL,
+    SUPABASE_SERVICE_KEY: TEST_SUPABASE_KEY,
     EVOLUTION_API_URL: `http://localhost:${MOCK_PORT}`,
+    EVOLUTION_API_KEY: 'e2e-evolution-key',
+    EVOLUTION_INSTANCE: TEST_INSTANCE,
+    EVOLUTION_WEBHOOK_SECRET: WEBHOOK_TEST_SECRET,
+    ADMIN_PASSWORD: ADMIN_TEST_PASSWORD,
     PORT: String(APP_PORT), ALT_PORT: String(APP_PORT),
     PUBLIC_URL: `http://localhost:${APP_PORT}`,
     REPLY_DELAY_MIN_MS: '250', REPLY_DELAY_MAX_MS: '350',
     KEEPALIVE_HOURS: '0', REARM_HOURS: '24', MONITOR_SECONDS: '1',
     RECOVERY_MIN_MINUTES: '0', RECOVERY_MAX: '5',
     SONDA_TIMEOUT_MS: '3000',
-    TEST_PHONES: [A, B, C, '5588000000094'].join(','),
+    FREIO_REJEICOES: '3', FREIO_DESTINOS_MIN: '3', FREIO_DESTINO_REJEICOES: '2',
+    TEST_PHONES: FIXTURE_PHONES.filter(p => /^\d+$/.test(p)).join(','),
     NODE_ENV: 'test'
   },
   stdio: ['ignore', 'pipe', 'pipe']
 });
-let appLog = '';
 app.stdout.on('data', d => { appLog += d; });
 app.stderr.on('data', d => { appLog += d; });
+app.on('error', e => { appLog += `\n[spawn] ${e.message}\n`; });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const somaUm = diaISO => {
@@ -97,9 +211,20 @@ const somaUm = diaISO => {
   return d.toISOString().slice(0, 10);
 };
 
-async function waitUp() {
+async function waitHttp() {
   for (let i = 0; i < 70; i++) {
     try { if ((await fetch(`http://localhost:${APP_PORT}/health`)).ok) return true; } catch {}
+    await sleep(300);
+  }
+  return false;
+}
+
+async function waitReady() {
+  for (let i = 0; i < 70; i++) {
+    try {
+      const h = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+      if (h.ready) return true;
+    } catch {}
     await sleep(300);
   }
   return false;
@@ -119,51 +244,98 @@ async function quiesce(timeoutMs = 20000) {
   throw new Error('processamento não terminou no tempo esperado');
 }
 
+async function postWebhook(body, { auth = true, expected = 200 } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (auth) headers['x-evolution-webhook-secret'] = WEBHOOK_TEST_SECRET;
+  const response = await fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+    method: 'POST', headers, body: JSON.stringify(body)
+  });
+  if (response.status !== expected) {
+    throw new Error(`webhook respondeu ${response.status}; esperado ${expected}: ${await response.text()}`);
+  }
+  return response;
+}
+
 async function diz(texto, { de = A, fromMe = false, jid = null, id = null, pushName = 'Sergio Ponte' } = {}) {
-  await fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      event: 'messages.upsert', instance: '3041',
+  await postWebhook({
+      event: 'messages.upsert', instance: TEST_INSTANCE,
       data: {
         key: { remoteJid: jid || `${de}@s.whatsapp.net`, fromMe, id: id || 'M' + Math.random().toString(36).slice(2,10) },
         pushName, message: { conversation: texto },
         messageType: 'conversation', messageTimestamp: Math.floor(Date.now()/1000)
       }
-    })
   });
   await quiesce();
 }
 
 /** Simula o ACK de entrega que a Evolution manda em MESSAGES_UPDATE. */
-async function ack(waId, status) {
-  await fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ event: 'messages.update', instance: '3041',
-                           data: { keyId: waId, status } })
-  });
+async function ack(waId, status, { instance = TEST_INSTANCE } = {}) {
+  await postWebhook({ event: 'messages.update', instance,
+                      data: { keyId: waId, status } });
   await quiesce();
 }
 
 const ultima = () => sent[sent.length - 1]?.text || '';
 const daPara = n => sent.filter(s => s.number === n);
 
-const sb = createClient(process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY, { auth: { persistSession: false } });
-
-async function limpar() {
-  for (const p of [A, B, C]) {
-    await sb.from('triages').delete().eq('phone', p);
-    await sb.from('bot_sessions').delete().eq('phone', p);
-    await sb.from('messages').delete().eq('phone', p);
-  }
+function escopoMensagemTeste(query) {
+  query = query.eq('is_test', true);
+  return MESSAGES_HAS_INSTANCE ? query.eq('instance', TEST_INSTANCE) : query;
 }
-const triagemDe = async p => (await sb.from('triages').select('*').eq('phone', p).maybeSingle()).data;
-const sessaoDe = async p => (await sb.from('bot_sessions').select('*').eq('phone', p).maybeSingle()).data;
+
+async function limparTabelaTeste(tabela, phones) {
+  let q = sb.from(tabela).delete().in('phone', phones).eq('is_test', true);
+  if (tabela === 'messages' && MESSAGES_HAS_INSTANCE) q = q.eq('instance', TEST_INSTANCE);
+  const { error } = await q;
+  if (error) throw new Error(`limpeza ${tabela}: ${error.message}`);
+}
+
+async function limparTelefones(phones) {
+  await limparTabelaTeste('triages', phones);
+  await limparTabelaTeste('bot_sessions', phones);
+  await limparTabelaTeste('messages', phones);
+}
+
+limparEventosTeste = async function () {
+  const { error } = await sb.from('connection_events').delete().eq('instance', TEST_INSTANCE);
+  if (error) throw new Error(`limpeza connection_events: ${error.message}`);
+};
+
+limpar = async function () {
+  await limparTelefones(FIXTURE_PHONES);
+};
+const triagemDe = async p => (await sb.from('triages').select('*')
+  .eq('phone', p).eq('is_test', true).maybeSingle()).data;
+const sessaoDe = async p => (await sb.from('bot_sessions').select('*')
+  .eq('phone', p).eq('is_test', true).maybeSingle()).data;
 
 /* ================= Bateria ================= */
-try {
   console.log('\n\x1b[1m═══ E2E · atendimento M & A ═══\x1b[0m');
-  if (!await waitUp()) { console.error('\nApp não subiu:\n' + appLog); process.exit(1); }
+  if (!await waitHttp()) throw new Error('App não subiu:\n' + appLog);
+
+  // A porta abre cedo para o painel diagnosticar o boot, mas webhooks devem
+  // receber 503 até banco, instância, freio e configuração estarem prontos.
+  const hBoot = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+  if (!hBoot.ready) {
+    await postWebhook({
+      event: 'messages.upsert', instance: TEST_INSTANCE,
+      data: { key: { remoteJid: `${A}@s.whatsapp.net`, fromMe: false, id: 'BOOT-PENDENTE' },
+              message: { conversation: 'não processe durante o boot' } }
+    }, { expected: 503 });
+    ok('webhook devolve 503 enquanto as dependências inicializam');
+  } else {
+    no('janela de boot não foi observada pelo teste');
+  }
+  if (!await waitReady()) throw new Error('App não ficou pronto:\n' + appLog);
+
+  await postWebhook({ event: 'messages.upsert', instance: TEST_INSTANCE, data: {} },
+    { auth: false, expected: 401 });
+  ok('webhook público recusa evento sem o segredo da Evolution');
+  await postWebhook({
+    event: 'messages.upsert', instance: TEST_INSTANCE,
+    apikey: 'e2e-evolution-key', data: {}
+  }, { auth: false });
+  ok('evento legado em retry autentica pelo apikey exposto desta instalação');
   await limpar();
 
   /* ---------- 0 · config vem do .env ---------- */
@@ -358,12 +530,11 @@ try {
 
   /* ---------- 8b · Sessão de versão anterior ---------- */
   head('8b · Sessão gravada por versão antiga do fluxo');
-  const D = '5588000000094';
-  await sb.from('bot_sessions').delete().eq('phone', D);
+  await limparTabelaTeste('bot_sessions', [D]);
   await sb.from('bot_sessions').insert([{
     phone: D, step: 'ask_vehicle',                    // passo que já não existe
     data: { phone: D, name: 'Sérgio', subject: 'Agendar serviço' },
-    handed_off: false, updated_at: new Date().toISOString()
+    handed_off: false, is_test: true, updated_at: new Date().toISOString()
   }]);
   let nD = sent.length;
   await diz('Corolla', { de: D });
@@ -373,8 +544,8 @@ try {
   const sD = await sessaoDe(D);
   sD?.data?.intent === 'agendar' ? ok('subject antigo migrado para intent') : no(`intent: ${sD?.data?.intent}`);
   sD?.data?.name === 'Sérgio' ? ok('nome preservado — não recomeçou do zero') : no('perdeu o nome');
-  await sb.from('bot_sessions').delete().eq('phone', D);
-  await sb.from('messages').delete().eq('phone', D);
+  await limparTabelaTeste('bot_sessions', [D]);
+  await limparTabelaTeste('messages', [D]);
 
   /* ---------- 9 · Filtros ---------- */
   head('9 · Filtros: própria mensagem, grupo, reentrega');
@@ -386,8 +557,8 @@ try {
   await diz('oi galera', { jid: '123456789-987@g.us' });
   sent.length === n ? ok('grupo ignorado') : no('respondeu em grupo');
 
-  await sb.from('bot_sessions').delete().eq('phone', C);
-  await sb.from('triages').delete().eq('phone', C);
+  await limparTabelaTeste('bot_sessions', [C]);
+  await limparTabelaTeste('triages', [C]);
   n = sent.length;
   await diz('oi', { de: C, id: 'DUP-1' });
   const depois1 = sent.length;
@@ -397,7 +568,8 @@ try {
 
   /* ---------- 10 · Rearme de 24h ---------- */
   head('10 · Rearme 24h após o último contato');
-  await sb.from('bot_sessions').update({ updated_at: new Date(Date.now() - 23*3600_000).toISOString() }).eq('phone', A);
+  await sb.from('bot_sessions').update({ updated_at: new Date(Date.now() - 23*3600_000).toISOString() })
+    .eq('phone', A).eq('is_test', true);
   n = daPara(A).length;
   await diz('oi de novo', { de: A });
   daPara(A).length === n ? ok('23h: continua silenciado') : no('23h: bot falou antes da hora');
@@ -406,7 +578,8 @@ try {
   (Date.now() - new Date(tocada.updated_at).getTime()) < 90_000
     ? ok('contato empurra a janela (não atropela a atendente)') : no('updated_at não renovou');
 
-  await sb.from('bot_sessions').update({ updated_at: new Date(Date.now() - 25*3600_000).toISOString() }).eq('phone', A);
+  await sb.from('bot_sessions').update({ updated_at: new Date(Date.now() - 25*3600_000).toISOString() })
+    .eq('phone', A).eq('is_test', true);
   n = daPara(A).length;
   await diz('voltei', { de: A });
   daPara(A).length > n ? ok('25h: bot rearmado') : no('25h: não rearmou');
@@ -428,40 +601,32 @@ try {
   /* ---------- 11a · Corrida no mesmo número ---------- */
   head('11a · Duas mensagens do mesmo número ao mesmo tempo');
   {
-    const R = '5588000000778';
-    await sb.from('triages').delete().eq('phone', R);
-    await sb.from('bot_sessions').delete().eq('phone', R);
-    await sb.from('messages').delete().eq('phone', R);
+    await limparTelefones([RACE_PHONE]);
 
     const antes = sent.length;
     // No WhatsApp é normal mandar "oi" e o nome sem esperar resposta. Sem
     // serialização por telefone, as duas liam a mesma sessão: o cliente
     // recebia as boas-vindas duas vezes e o nome era descartado.
-    const crua = (texto, id) => fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        event: 'messages.upsert', instance: '3041',
+    const crua = (texto, id) => postWebhook({
+        event: 'messages.upsert', instance: TEST_INSTANCE,
         data: {
-          key: { remoteJid: `${R}@s.whatsapp.net`, fromMe: false, id },
+          key: { remoteJid: `${RACE_PHONE}@s.whatsapp.net`, fromMe: false, id },
           pushName: 'Sergio', message: { conversation: texto },
           messageType: 'conversation', messageTimestamp: Math.floor(Date.now()/1000)
         }
-      })
     });
     await Promise.all([crua('oi', 'RACE-A'), crua('Sérgio', 'RACE-B')]);
     await quiesce();
 
-    const respostas = sent.slice(antes).filter(x => x.number === R).map(x => x.text);
+    const respostas = sent.slice(antes).filter(x => x.number === RACE_PHONE).map(x => x.text);
     const boasVindas = respostas.filter(t => /qual é o seu nome/i.test(t)).length;
     boasVindas <= 1 ? ok('não repetiu a pergunta do nome') : no(`perguntou o nome ${boasVindas} vezes`);
 
-    const sess = await sessaoDe(R);
+    const sess = await sessaoDe(RACE_PHONE);
     sess?.data?.name === 'Sérgio' ? ok('a segunda mensagem não foi perdida (nome capturado)') : no(`nome: ${sess?.data?.name}`);
     sess?.step === 'ask_intent' ? ok('fluxo avançou em ordem') : no(`passo: ${sess?.step}`);
 
-    await sb.from('triages').delete().eq('phone', R);
-    await sb.from('bot_sessions').delete().eq('phone', R);
-    await sb.from('messages').delete().eq('phone', R);
+    await limparTelefones([RACE_PHONE]);
   }
 
   /* ---------- 11b · matchOption com texto livre ---------- */
@@ -501,7 +666,7 @@ try {
 
     const login0 = await fetch(`http://localhost:${APP_PORT}/admin/api/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: process.env.ADMIN_PASSWORD })
+      body: JSON.stringify({ password: ADMIN_TEST_PASSWORD })
     });
     const tk = (await login0.json()).token;
     const d = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`,
@@ -541,6 +706,9 @@ try {
     const h = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
     h.config ? ok('config presente no /health') : no('config ausente');
     h.config?.rearmeHoras === 24 ? ok('rearme = 24h (verificável sem ler log)') : no(`rearme: ${h.config?.rearmeHoras}`);
+    h.config?.instance === TEST_INSTANCE ? ok('instância em vigor exposta corretamente') : no(`instância: ${h.config?.instance}`);
+    h.config?.webhookProtegido === true ? ok('proteção do webhook confirmada no /health') : no('webhook não protegido');
+    h.operational === true ? ok('canal operacional no início da suíte') : no('canal começou não operacional');
     Array.isArray(h.config?.delayMs) ? ok(`delay declarado: ${h.config.delayMs.join('–')}ms`) : no('delay ausente');
     h.config?.fuso ? ok(`fuso: ${h.config.fuso}`) : no('fuso ausente');
     h.caixaPreta?.capacidade ? ok('resumo da caixa preta no /health') : no('caixa preta ausente do /health');
@@ -550,7 +718,7 @@ try {
   head('12 · API e dashboard');
   const login = await fetch(`http://localhost:${APP_PORT}/admin/api/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: process.env.ADMIN_PASSWORD })
+    body: JSON.stringify({ password: ADMIN_TEST_PASSWORD })
   });
   login.ok ? ok('login aceito') : no(`login falhou: ${login.status}`);
   const { token } = await login.json();
@@ -614,7 +782,8 @@ try {
     oscilou ? ok('caixa preta marca a oscilação assim que detecta') : no('oscilação não registrada');
     // A queda vai para o histórico persistente, não só para a caixa preta.
     const { data: gravadas } = await sb.from('connection_events')
-      .select('event').gte('created_at', new Date(Date.now() - 120_000).toISOString());
+      .select('event').eq('instance', TEST_INSTANCE)
+      .gte('created_at', new Date(Date.now() - 120_000).toISOString());
     (gravadas || []).some(e => e.event === 'caiu') ? ok('queda gravada no histórico persistente') : no('queda não persistida');
 
     const st = await (await fetch(`http://localhost:${APP_PORT}/admin/api/status`, auth)).json();
@@ -722,7 +891,7 @@ try {
 
     // A simulação de queda da seção 12b deve ter deixado registro no BANCO.
     const { data: gravados } = await sb.from('connection_events')
-      .select('*').gte('created_at', new Date(Date.now() - 600_000).toISOString())
+      .select('*').eq('instance', TEST_INSTANCE)
       .order('created_at', { ascending: false });
     (gravados || []).some(e => e.event === 'caiu')
       ? ok('a queda simulada ficou gravada no banco (sobrevive a deploy)') : no('queda não foi persistida');
@@ -737,20 +906,17 @@ try {
       ? ok('histórico exige token') : no('histórico exposto');
 
     // limpa o que a simulação gerou
-    await sb.from('connection_events').delete().gte('created_at', new Date(Date.now() - 600_000).toISOString());
+    await limparEventosTeste();
   }
 
   /* ---------- 12e · Retomada depois da queda ---------- */
   head('12e · Retoma conversas interrompidas por queda de conexão');
   {
     const auth = { headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } };
-    const P = '5588000000801';   // ficou parado no meio do fluxo
-    const Q = '5588000000802';   // já foi para a atendente: NÃO pode ser incomodado
+    // P ficou parado no meio do fluxo; Q já foi para a atendente.
     // Isolamento: a retomada em NODE_ENV=test só olha sessões is_test = true.
 
-    for (const t of ['messages','bot_sessions','triages']) {
-      await sb.from(t).delete().in('phone', [P, Q]);
-    }
+    await limparTelefones([P, Q]);
     // Ambos com atividade antiga, como se a conexão tivesse caído depois.
     const antigo = new Date(Date.now() - 3600_000).toISOString();
     await sb.from('bot_sessions').insert([
@@ -765,8 +931,12 @@ try {
       { method: 'POST', ...auth, body: JSON.stringify({ horas: 6 }) })).json();
 
     r.ok === true ? ok('rota de retomada responde') : no(`retomada falhou: ${r.error}`);
-    r.telefones?.includes(P) ? ok('retomou quem ficou parado no meio do fluxo') : no(`não retomou ${P}`);
-    r.telefones?.every(t => t.startsWith('55880000')) ? ok('em teste, só toca sessões de teste') : no(`vazou para produção: ${r.telefones}`);
+    // O monitor automático e o botão usam a mesma fila. Se a volta da conexão
+    // já tinha enfileirado a retomada, ele pode enviar P antes de a chamada
+    // manual adquirir a fila; o contrato importante é exatamente uma entrega.
+    const retomouP = r.telefones?.includes(P) || sent.slice(antes).some(x => x.number === P);
+    retomouP ? ok('retomou quem ficou parado no meio do fluxo') : no(`não retomou ${P}`);
+    r.telefones?.every(t => t.startsWith(FIXTURE_PREFIX)) ? ok('em teste, só toca sessões desta execução') : no(`vazou para outro escopo: ${r.telefones}`);
     !r.telefones?.includes(Q) ? ok('NÃO incomodou quem já está com a atendente') : no('mandou mensagem para quem já foi atendido');
 
     const msg = sent.slice(antes).find(x => x.number === P)?.text || '';
@@ -795,9 +965,7 @@ try {
     const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
     page.includes('btnRetomar') ? ok('botão "Retomar conversas" no dashboard') : no('botão de retomada ausente');
 
-    for (const t of ['messages','bot_sessions','triages']) {
-      await sb.from(t).delete().in('phone', [P, Q]);
-    }
+    await limparTelefones([P, Q]);
   }
 
   /* ---------- 12f2 · Auto-correção dos eventos do webhook ---------- */
@@ -811,14 +979,15 @@ try {
       ? ok('MESSAGES_UPSERT preservado') : no('perdeu MESSAGES_UPSERT');
     !webhookEventos.includes('SEND_MESSAGE')
       ? ok('SEND_MESSAGE segue fora (evitaria loop infinito)') : no('SEND_MESSAGE entrou — causa loop');
+    webhookHeaders?.['x-evolution-webhook-secret'] === WEBHOOK_TEST_SECRET
+      ? ok('boot configurou o header secreto na Evolution') : no('header secreto não foi sincronizado');
   }
 
   /* ---------- 12g · Entrega: aceite não é entrega ---------- */
   head('12g · Rastreio de ENTREGA (o que faltava para saber se funciona)');
   {
     const auth = { headers: { Authorization: 'Bearer ' + token } };
-    const E = '5588000000803';
-    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', E);
+    await limparTelefones([E]);
     await sb.from('bot_sessions').insert([{ phone: E, step: 'ask_name', data: { phone: E },
                                            handed_off: false, is_test: true }]);
 
@@ -828,34 +997,64 @@ try {
     const enviada = sent.slice(antes).find(x => x.number === E);
     enviada?.waId ? ok(`envio devolveu o id do WhatsApp (${enviada.waId})`) : no('sem waId no envio');
 
-    const { data: reg } = await sb.from('messages').select('wa_id,status')
+    const { data: reg } = await escopoMensagemTeste(sb.from('messages').select('wa_id,status'))
       .eq('phone', E).eq('direction','out').order('created_at', { ascending: false }).limit(1);
     reg?.[0]?.wa_id === enviada?.waId ? ok('id gravado na mensagem') : no(`wa_id gravado: ${reg?.[0]?.wa_id}`);
     reg?.[0]?.status === 'PENDING' ? ok('status inicial PENDING (aceito, não entregue)') : no(`status: ${reg?.[0]?.status}`);
 
     // Chega o ACK: a mensagem promove para entregue.
     await ack(enviada.waId, 'DELIVERY_ACK');
-    const { data: dep } = await sb.from('messages').select('status,status_at')
+    const { data: dep } = await escopoMensagemTeste(sb.from('messages').select('status,status_at'))
       .eq('wa_id', enviada.waId).limit(1);
     dep?.[0]?.status === 'DELIVERY_ACK' ? ok('ACK de entrega promove o status') : no(`status após ACK: ${dep?.[0]?.status}`);
     dep?.[0]?.status_at ? ok('registra quando confirmou') : no('sem status_at');
 
     // Leitura também sobe o status.
     await ack(enviada.waId, 'READ');
-    const { data: lida } = await sb.from('messages').select('status').eq('wa_id', enviada.waId).limit(1);
+    const { data: lida } = await escopoMensagemTeste(sb.from('messages').select('status'))
+      .eq('wa_id', enviada.waId).limit(1);
     lida?.[0]?.status === 'READ' ? ok('ACK de leitura registrado') : no(`status: ${lida?.[0]?.status}`);
 
-    // ACK de id desconhecido não pode explodir.
+    // ACK atrasado não pode rebaixar READ para SERVER_ACK.
+    await ack(enviada.waId, 'SERVER_ACK');
+    const { data: monotona } = await escopoMensagemTeste(sb.from('messages').select('status'))
+      .eq('wa_id', enviada.waId).limit(1);
+    monotona?.[0]?.status === 'READ' ? ok('ACK regressivo não rebaixa o status') : no(`status regrediu: ${monotona?.[0]?.status}`);
+
+    // A Evolution pode publicar a entrega antes de devolver o sendText. O ACK
+    // fica persistido e é conciliado assim que a linha de saída nasce.
+    earlyAckNext = 'DELIVERY_ACK';
+    const antesCorrida = sent.length;
+    await diz('Sérgio', { de: E });
+    const corrida = sent.slice(antesCorrida).find(x => x.number === E);
+    const { data: corridaDb } = await escopoMensagemTeste(sb.from('messages').select('status'))
+      .eq('wa_id', corrida?.waId).eq('direction', 'out').limit(1);
+    corridaDb?.[0]?.status === 'DELIVERY_ACK'
+      ? ok('ACK anterior ao insert é persistido e conciliado')
+      : no(`ACK da corrida ficou em ${corridaDb?.[0]?.status}`);
+
+    // ACK de id desconhecido não pode explodir nem alterar o freio.
+    const freioAntesDoEstranho = await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/freio`, auth)).json();
     await ack('NAO-EXISTE-999', 'DELIVERY_ACK');
-    ok('ACK de id desconhecido é ignorado sem erro');
+    const freioDepoisDoEstranho = await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/freio`, auth)).json();
+    freioDepoisDoEstranho.ultimaEntrega === freioAntesDoEstranho.ultimaEntrega
+      ? ok('ACK de id desconhecido é ignorado sem alterar o freio')
+      : no('ACK desconhecido alterou o freio');
 
     // ERROR = recusa do WhatsApp, não demora. Precisa ser distinguido.
     const antes2 = sent.length;
-    await diz('Sérgio', { de: E });
+    await diz('1', { de: E });
     const seg = sent.slice(antes2).find(x => x.number === E);
     if (seg?.waId) {
+      await ack(seg.waId, 'ERROR', { instance: 'outra-instancia' });
+      const { data: estrangeira } = await escopoMensagemTeste(sb.from('messages').select('status'))
+        .eq('wa_id', seg.waId).limit(1);
+      estrangeira?.[0]?.status === 'PENDING'
+        ? ok('ACK de outra instância é ignorado') : no(`outra instância alterou para ${estrangeira?.[0]?.status}`);
+
       await ack(seg.waId, 'ERROR');
-      const { data: rej } = await sb.from('messages').select('status').eq('wa_id', seg.waId).limit(1);
+      const { data: rej } = await escopoMensagemTeste(sb.from('messages').select('status'))
+        .eq('wa_id', seg.waId).limit(1);
       rej?.[0]?.status === 'ERROR' ? ok('ACK de ERROR é registrado') : no(`status: ${rej?.[0]?.status}`);
       const e2 = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, auth)).json();
       e2.rejeitadas >= 1 ? ok(`resumo conta as rejeitadas (${e2.rejeitadas})`) : no(`rejeitadas: ${e2.rejeitadas}`);
@@ -863,7 +1062,7 @@ try {
     }
     const pagRej = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
     pagRej.includes('REJEITADA pelo WhatsApp') ? ok('dashboard mostra "REJEITADA" por mensagem') : no('rótulo de rejeição ausente');
-    pagRej.includes('é recusa') ? ok('alarme distingue recusa de demora') : no('alarme não distingue');
+    pagRej.includes('recusa isolada') ? ok('alarme distingue recusa isolada de pane global') : no('alarme não distingue');
 
     const ent = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, auth)).json();
     typeof ent.enviadas === 'number' ? ok(`resumo de entrega responde (${ent.entregues}/${ent.enviadas})`) : no('resumo não respondeu');
@@ -871,14 +1070,14 @@ try {
 
     const page = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
     page.includes('pillEnt') ? ok('pílula de entrega no topo do dashboard') : no('pílula ausente');
-    page.includes('NÃO estão sendo entregues') ? ok('alarme de entrega falhando na página') : no('alarme ausente');
+    page.includes('PENDING/SERVER_ACK') ? ok('alarme explica aceite sem entrega') : no('alarme ausente');
     page.includes('entregue') ? ok('status por mensagem no fluxo') : no('status por mensagem ausente');
 
     const logAck = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, auth)).json();
     (logAck.eventos || []).some(e => e.event === 'webhook.ack')
       ? ok('caixa preta registra os ACKs') : no('ACK não registrado na caixa preta');
 
-    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', E);
+    await limparTelefones([E]);
   }
 
   /* ---------- 12h · Freio de envio: recusa em série para o bot ---------- */
@@ -886,39 +1085,99 @@ try {
   {
     const auth = { headers: { Authorization: 'Bearer ' + token }, method: 'POST' };
     const authGet = { headers: { Authorization: 'Bearer ' + token } };
-    const F = '5588000000812';
+    const FREIO_PHONES = [F, F2, F3, F4];
     const freio = async () => (await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/freio`, authGet)).json());
-    const liberar = () => fetch(`http://localhost:${APP_PORT}/admin/api/envio/liberar`, auth);
+    const liberar = () => fetch(`http://localhost:${APP_PORT}/admin/api/envio/liberar`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        confirmar: 'LIBERAR_MANUALMENTE',
+        motivo: 'override controlado da suíte E2E'
+      })
+    });
 
     await liberar();
-    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', F);
+    await limparTelefones(FREIO_PHONES);
     (await freio()).bloqueado === false ? ok('começa com o envio liberado') : no('freio já engatado antes do teste');
 
-    // Três recusas seguidas: o limite de fábrica.
-    let engatou = false;
-    for (let i = 0; i < 3; i++) {
-      const antes = sent.length;
-      await diz(i === 0 ? 'oi' : 'Sérgio', { de: F });
-      const m = sent.slice(antes).find(x => x.number === F);
-      if (!m?.waId) break;
-      await ack(m.waId, 'ERROR');
-      engatou = (await freio()).bloqueado;
-      if (engatou) break;
+    await ack('ACK-EXTERNO-ERROR', 'ERROR');
+    const externo = await freio();
+    !externo.bloqueado && externo.rejeicoesSeguidas === 0
+      ? ok('ERROR desconhecido não entra na contagem')
+      : no(`ERROR desconhecido alterou o freio: ${JSON.stringify(externo)}`);
+
+    // Reentrega do mesmo ACK ERROR vale uma recusa, não três.
+    const antesPrimeira = sent.length;
+    await diz('oi', { de: F });
+    const primeira = sent.slice(antesPrimeira).find(x => x.number === F);
+    if (primeira?.waId) {
+      await ack(primeira.waId, 'ERROR');
+      await ack(primeira.waId, 'ERROR');
+      await ack(primeira.waId, 'ERROR');
     }
-    engatou ? ok('3 recusas seguidas engatam o freio') : no('freio não engatou com recusas em série');
+    const duplicada = await freio();
+    !duplicada.bloqueado && duplicada.rejeicoesSeguidas === 1
+      ? ok('ACK ERROR duplicado conta uma única recusa')
+      : no(`ACK duplicado contou errado: ${JSON.stringify(duplicada)}`);
+
+    // A segunda recusa isola somente F. Mesmo acima do limite numérico, um
+    // único contato inválido jamais pode silenciar todos os clientes.
+    const antesSegunda = sent.length;
+    await diz('Sérgio', { de: F });
+    const segundaF = sent.slice(antesSegunda).find(x => x.number === F);
+    if (segundaF?.waId) await ack(segundaF.waId, 'ERROR');
+    const umDestino = await freio();
+    !umDestino.bloqueado && umDestino.destinatariosRejeitados === 1
+      ? ok('recusas de um único contato não bloqueiam o canal inteiro')
+      : no(`um contato bloqueou globalmente: ${JSON.stringify(umDestino)}`);
+
+    const antesIsolado = sent.length;
+    await diz('1', { de: F });
+    sent.length === antesIsolado
+      ? ok('destinatário reincidente é isolado individualmente')
+      : no('destinatário com duas recusas continuou recebendo tentativas');
+
+    // Outros contatos continuam; só uma sequência espalhada por três
+    // destinatários prova uma pane do canal e engata o freio global.
+    for (const telefone of [F2, F3]) {
+      const antes = sent.length;
+      await diz('oi', { de: telefone });
+      const m = sent.slice(antes).find(x => x.number === telefone);
+      if (m?.waId) await ack(m.waId, 'ERROR');
+    }
+    const engatou = (await freio()).bloqueado;
+    engatou
+      ? ok('recusas consecutivas em 3 destinatários engatam o freio global')
+      : no('pane espalhada não engatou o freio');
 
     const f1 = await freio();
     f1.motivo ? ok(`freio registra o motivo (${String(f1.motivo).slice(0, 40)}…)`) : no('freio sem motivo');
     f1.desde ? ok('freio registra desde quando') : no('freio sem horário');
+
+    if (segundaF?.waId) {
+      await ack(segundaF.waId, 'DELIVERY_ACK');
+      (await freio()).bloqueado === true
+        ? ok('ACK tardio de envio anterior não desfaz a pane persistida')
+        : no('ACK antigo liberou o freio global');
+    }
+
+    if (primeira?.waId) {
+      await ack(primeira.waId, 'DELIVERY_ACK', { instance: 'outra-instancia' });
+      (await freio()).bloqueado === true
+        ? ok('entrega de outra instância não libera o freio') : no('outra instância liberou o freio');
+    }
 
     // Com o freio engatado o bot NÃO pode enviar mais nada.
     const antesBloq = sent.length;
     await diz('e agora?', { de: F });
     sent.length === antesBloq ? ok('com o freio engatado o bot não envia') : no('bot enviou com o freio engatado');
 
-    const { data: bloq } = await sb.from('messages').select('status,body')
-      .eq('phone', F).eq('direction','out').eq('status','BLOQUEADO').limit(1);
-    bloq?.length ? ok('a resposta que não saiu fica registrada como BLOQUEADO') : no('resposta bloqueada não registrada');
+    const { data: bloq } = await escopoMensagemTeste(sb.from('messages').select('status,body'))
+      .eq('phone', F).eq('direction','out').in('status', ['BLOQUEADO', 'BLOQUEADO_DESTINO']).limit(1);
+    bloq?.length ? ok(`a resposta que não saiu fica registrada como ${bloq[0].status}`) : no('resposta bloqueada não registrada');
 
     const ent = await (await fetch(`http://localhost:${APP_PORT}/admin/api/entrega?minutos=30`, authGet)).json();
     typeof ent.naoEnviadas === 'number' ? ok(`resumo separa as não enviadas (${ent.naoEnviadas})`) : no('resumo não separa BLOQUEADO');
@@ -926,18 +1185,20 @@ try {
 
     const saude = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
     saude.freio?.bloqueado === true ? ok('/health expõe o freio engatado') : no('/health sem o freio');
+    saude.operational === false ? ok('/health não produz falso verde operacional') : no('/health operacional com envio bloqueado');
 
     const logF = await (await fetch(`http://localhost:${APP_PORT}/admin/api/log?limit=400`, authGet)).json();
     const nomes = new Set((logF.eventos || []).map(e => e.event));
     nomes.has('freio.engatado') ? ok('caixa preta registra o freio engatando') : no('freio ausente da caixa preta');
-    nomes.has('freio.naoEnviou') ? ok('caixa preta registra a resposta que não saiu') : no('não registra a resposta engolida');
+    (nomes.has('freio.naoEnviou') || nomes.has('freio.destinoNaoEnviou'))
+      ? ok('caixa preta registra a resposta que não saiu') : no('não registra a resposta engolida');
 
-    // Entrega confirmada solta o freio: é a única prova de que o canal voltou.
+    // A liberação manual é persistida e religa o canal para outros contatos.
     await liberar();
     (await freio()).bloqueado === false ? ok('liberação manual religa o envio') : no('liberação manual não funcionou');
 
     const antesVolta = sent.length;
-    await diz('voltei', { de: F });
+    await diz('voltei', { de: F4 });
     sent.length > antesVolta ? ok('depois de liberado o bot volta a responder') : no('bot continua mudo após liberar');
 
     await fetch(`http://localhost:${APP_PORT}/admin/api/envio/bloquear`, {
@@ -946,25 +1207,38 @@ try {
     });
     (await freio()).bloqueado === true ? ok('bloqueio manual disponível') : no('bloqueio manual não funcionou');
 
-    const ultima = sent.slice(antesVolta).find(x => x.number === F);
+    const ultima = sent.slice(antesVolta).find(x => x.number === F4);
     if (ultima?.waId) {
       await ack(ultima.waId, 'DELIVERY_ACK');
-      (await freio()).bloqueado === false ? ok('entrega confirmada solta o freio sozinha') : no('entrega não soltou o freio');
+      (await freio()).bloqueado === true
+        ? ok('ACK tardio anterior ao bloqueio não solta o freio')
+        : no('mensagem antiga liberou o freio indevidamente');
     }
 
     const pag = await (await fetch(`http://localhost:${APP_PORT}/admin`)).text();
     pag.includes('Testar envio') ? ok('dashboard tem o teste de envio') : no('teste de envio ausente');
     pag.includes('Liberar envio') ? ok('dashboard tem a liberação do envio') : no('liberação ausente');
-    pag.includes('ENVIO BLOQUEADO') ? ok('dashboard mostra o envio bloqueado') : no('aviso de bloqueio ausente');
-    pag.includes('freio de segurança') ? ok('rótulo da mensagem não enviada na página') : no('rótulo ausente');
+    pag.includes('CANAL BLOQUEADO') ? ok('dashboard mostra o envio bloqueado') : no('aviso de bloqueio ausente');
+    pag.includes('NÃO ENVIADA') ? ok('rótulo da mensagem não enviada na página') : no('rótulo ausente');
 
-    // Sonda: um envio só, com espera do ACK real.
-    const sonda = await (await fetch(`http://localhost:${APP_PORT}/admin/api/envio/sonda`, {
+    // Sonda: um envio só, com espera do ACK real. A request fica aberta
+    // enquanto o webhook de entrega chega em paralelo.
+    const antesSonda = sent.length;
+    const pedidoSonda = fetch(`http://localhost:${APP_PORT}/admin/api/envio/sonda`, {
       ...auth, headers: { ...auth.headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ numero: F, texto: 'sonda de teste' })
-    })).json();
+    });
+    let enviadaSonda = null;
+    for (let i = 0; i < 30 && !enviadaSonda; i++) {
+      enviadaSonda = sent.slice(antesSonda).find(x => x.number === F) || null;
+      if (!enviadaSonda) await sleep(50);
+    }
+    if (enviadaSonda?.waId) await ack(enviadaSonda.waId, 'DELIVERY_ACK');
+    const sonda = await (await pedidoSonda).json();
     sonda.waId ? ok('sonda envia e devolve o id') : no('sonda não enviou');
-    'veredito' in sonda ? ok('sonda dá veredito em português') : no('sonda sem veredito');
+    sonda.entregue === true ? ok('sonda espera e confirma a entrega real') : no(`sonda: ${JSON.stringify(sonda)}`);
+    (await freio()).bloqueado === false
+      ? ok('sonda entregue libera o freio de forma persistida') : no('sonda entregue não liberou o freio');
 
     const ruim = await fetch(`http://localhost:${APP_PORT}/admin/api/envio/sonda`, {
       ...auth, headers: { ...auth.headers, 'Content-Type': 'application/json' },
@@ -972,25 +1246,39 @@ try {
     });
     ruim.status === 400 ? ok('sonda recusa número inválido') : no(`sonda aceitou número inválido (${ruim.status})`);
 
-    // O freio mora em memória: o boot pergunta ao banco como terminou a última
-    // mensagem com veredito, senão um deploy religaria um canal recusando.
-    const { ultimoVereditoEnvio, initSupabase } = await import('../src/database.js');
-    await initSupabase();
-    const G = '5588000000813';
-    await sb.from('messages').delete().eq('phone', G);
-    await sb.from('messages').insert([{ phone: G, direction: 'out', body: 'recusada',
-      is_test: false, wa_id: 'VEREDITO-ERR', status: 'ERROR', status_at: new Date().toISOString() }]);
-    let v = await ultimoVereditoEnvio({ horas: 24 });
-    v?.recusado === true ? ok('boot enxerga a última mensagem recusada') : no(`veredito: ${JSON.stringify(v)}`);
+    // Testa o cálculo de boot de forma pura. A versão anterior inseria linhas
+    // `is_test=false` e timestamps futuros no Supabase compartilhado.
+    const { calcularVereditoEnvio } = await import('../src/database.js');
+    const baseVeredito = Date.now();
+    const linha = (id, phone, status, ms) => ({
+      id, phone, status,
+      created_at: new Date(baseVeredito + ms).toISOString(),
+      status_at: new Date(baseVeredito + ms).toISOString()
+    });
+    let v = calcularVereditoEnvio([
+      linha(1, F, 'ERROR', 0), linha(2, F, 'ERROR', 1), linha(3, F, 'ERROR', 2)
+    ]);
+    v?.rejeicoesSeguidas === 3 && v?.destinatariosRejeitados?.length === 1
+      ? ok('boot distingue sequência de um contato de pane global')
+      : no(`veredito isolado: ${JSON.stringify(v)}`);
 
-    await sb.from('messages').insert([{ phone: G, direction: 'out', body: 'entregue',
-      is_test: false, wa_id: 'VEREDITO-OK', status: 'DELIVERY_ACK', status_at: new Date().toISOString() }]);
-    v = await ultimoVereditoEnvio({ horas: 24 });
-    v?.recusado === false ? ok('entrega posterior desfaz o veredito de recusa') : no(`veredito: ${JSON.stringify(v)}`);
-    await sb.from('messages').delete().eq('phone', G);
+    v = calcularVereditoEnvio([
+      linha(1, F, 'ERROR', 0), linha(2, F2, 'ERROR', 1),
+      linha(3, F3, 'ERROR', 2), linha(4, F4, 'DELIVERY_ACK', 3)
+    ]);
+    v?.recusado === false && v?.rejeicoesSeguidas === 0
+      ? ok('entrega posterior vence recusas anteriores no boot')
+      : no(`veredito de entrega: ${JSON.stringify(v)}`);
+
+    v = calcularVereditoEnvio([
+      linha(1, F, 'DELIVERY_ACK', 0), linha(2, '__canal__', 'MANUAL_BLOCK', 1)
+    ]);
+    v?.bloqueioManual === true
+      ? ok('bloqueio manual persistido vence ACK tardio de mensagem antiga')
+      : no(`veredito manual: ${JSON.stringify(v)}`);
 
     await liberar();
-    for (const t of ['messages','bot_sessions','triages']) await sb.from(t).delete().eq('phone', F);
+    await limparTelefones(FREIO_PHONES);
   }
 
   /* ---------- 13 · Produção mostra só conversa real ---------- */
@@ -1001,7 +1289,7 @@ try {
 
     // O banco pode ter atendimento real de verdade. Os asserts comparam com o
     // conjunto de números da suíte, nunca com "zero".
-    const NOSSOS = new Set([A, B, C, '5588000000094']);
+    const NOSSOS = new Set([A, B, C, D]);
     const nossos = arr => arr.filter(r => NOSSOS.has(r.phone));
 
     const comTestes = await get('triages?testes=1');
@@ -1037,8 +1325,7 @@ try {
     // Fuso: uma mensagem das 22h em Sobral (UTC-3) é gravada como 01:00Z do dia
     // seguinte. Comparar a data local contra limites UTC a jogava no dia errado.
     {
-      const TZ_PHONE = '5588000000777';
-      await sb.from('triages').delete().eq('phone', TZ_PHONE);
+      await limparTabelaTeste('triages', [TZ_PHONE]);
 
       // 22:00 locais de hoje = 01:00Z de amanhã.
       const hojeLocal = new Date(Date.now() - 3 * 3600_000).toISOString().slice(0, 10);
@@ -1058,7 +1345,7 @@ try {
       diaSeguinte.some(r => r.phone === TZ_PHONE)
         ? no('22h vazou para o dia seguinte') : ok('22h não vaza para o dia seguinte');
 
-      await sb.from('triages').delete().eq('phone', TZ_PHONE);
+      await limparTabelaTeste('triages', [TZ_PHONE]);
     }
 
     const invalida = await get('triages?testes=1&de=nao-e-data');
@@ -1082,8 +1369,12 @@ try {
     del.apagados?.bot_sessions >= nossasSessoes.length
       ? ok('sessões de teste também foram apagadas') : no(`sessões apagadas: ${del.apagados?.bot_sessions}`);
 
-    const sobrouTeste = (await sb.from('triages').select('phone').eq('is_test', true)).data?.length ?? 0;
-    sobrouTeste === 0 ? ok('nenhum teste sobrou no banco') : no(`sobraram ${sobrouTeste} testes`);
+    const nossosPhones = FIXTURE_PHONES.filter(p => /^\d+$/.test(p));
+    const sobrouTeste = (await sb.from('triages').select('phone')
+      .eq('is_test', true).in('phone', nossosPhones)).data?.length ?? 0;
+    sobrouTeste === 0
+      ? ok('nenhuma fixture desta execução sobrou no banco')
+      : no(`sobraram ${sobrouTeste} fixtures desta execução`);
 
     const reaisDepois = (await sb.from('triages').select('phone').eq('is_test', false)).data?.length ?? 0;
     reaisDepois === reaisAntes
@@ -1095,14 +1386,27 @@ try {
   no('exceção no teste: ' + err.message);
   console.error(err);
 } finally {
-  await limpar();
-  app.kill('SIGKILL');
-  mockServer.close();
+  // Sempre encerra o app antes de limpar, para o monitor não recriar linhas
+  // depois do DELETE. Falhas de boot também passam por este caminho.
+  if (app && app.exitCode === null) {
+    await new Promise(resolve => {
+      const timer = setTimeout(() => { app.kill('SIGKILL'); resolve(); }, 1500);
+      app.once('exit', () => { clearTimeout(timer); resolve(); });
+      app.kill('SIGTERM');
+    });
+  }
+  try {
+    await limpar();
+    await limparEventosTeste();
+  } catch (e) {
+    no('cleanup seguro falhou', e.message);
+  }
+  if (mockServer?.listening) await new Promise(resolve => mockServer.close(resolve));
   console.log('\n' + '─'.repeat(58));
   console.log(fail === 0
     ? `\x1b[32m\x1b[1m✔ ${pass} verificações passaram.\x1b[0m`
     : `\x1b[31m\x1b[1m✖ ${fail} falha(s) · ${pass} ok\x1b[0m`);
   console.log('─'.repeat(58) + '\n');
   if (fail) console.log('Log do app (fim):\n' + appLog.split('\n').slice(-25).join('\n'));
-  process.exit(fail ? 1 : 0);
+  process.exitCode = fail ? 1 : 0;
 }

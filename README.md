@@ -1,610 +1,83 @@
-# M & A Lavagens e Estética · Atendimento WhatsApp
+# Chatbot M & A — atendimento WhatsApp
 
-Manual de bordo. O bot conversa, monta o contexto e entrega o cliente pronto
-para a atendente humana — no mesmo chat.
+Bot de triagem da M & A Lavagens e Estética. Ele coleta contexto sem repetir
+perguntas, grava a solicitação no Supabase e encaminha a conversa para a
+atendente humana.
 
-**Evolution API v2** · **Supabase** · **Node 22** · **Docker** · **EasyPanel**
+**Stack:** Node 22 · Evolution API v2.3.7 · Supabase · Docker · EasyPanel
 
-| | |
+| Recurso | Endereço |
 |---|---|
 | Dashboard | https://startups-lavaajatoma.qfotry.easypanel.host/admin |
-| WhatsApp | (88) 98155-3041 · instância `3041` |
-| Saúde | `/health` · Ping anti-pause `/ping` |
-| Repositório | `sxsevenxperts/CHATBOT-M-A` |
+| Saúde | https://startups-lavaajatoma.qfotry.easypanel.host/health |
+| Ping | https://startups-lavaajatoma.qfotry.easypanel.host/ping |
+| Webhook | https://startups-lavaajatoma.qfotry.easypanel.host/webhook/messages |
+| Instância | `3041` |
 
----
+## Fluxo
 
-## 1 · Como o atendimento funciona
-
-Seis etapas, com **árvore de decisão dinâmica**: o bot pergunta apenas o que
-ainda não sabe.
-
-```
-1 · Boas-vindas + nome
-2 · Veículo — categoria e modelo
-3 · Necessidade — serviço, ou "ainda não sei" → o bot recomenda
-4 · Nível — Essencial / Completa / Premium, ou o bot indica
-5 · Agendamento — período e data
-6 · Transferência para a atendente, com o contexto pronto
+```text
+Evolution → webhook autenticado → inbox persistente → fila por telefone
+→ triagem → sendText → ACK → freio/estado canônico
 ```
 
-### A regra central
+O bot cobre boas-vindas, nome, veículo, necessidade, nível, período/data e
+handoff com contexto. Depois do handoff ele silencia até o rearme configurado.
 
-**Nunca perguntar de novo o que o cliente já disse.** Cada mensagem passa por um
-extrator de contexto; o que ele reconhece preenche o registro e a pergunta
-correspondente simplesmente não acontece.
+## Operação importante
 
-Quem escreve, de primeira:
+`ready` significa que banco, WhatsApp, canal e webhook estão prontos.
+`operational` também exige freio de envio liberado. `PENDING` e `SERVER_ACK` não
+provam entrega; `DELIVERY_ACK`, `READ` e `PLAYED` são as confirmações úteis.
 
-> Meu nome é Sérgio, tenho uma Hilux e quero lavagem completa sábado
+O freio global só engata após recusas consecutivas em múltiplos destinatários;
+um contato reincidente recebe `BLOQUEADO_DESTINO` sem silenciar os demais. Toda
+recusa `ERROR` deve ser tratada como evidência operacional, não como prova
+automática de banimento.
 
-recebe **uma única pergunta** — o período. O bot já extraiu nome, categoria
-(`Hilux → Picape`), veículo, serviço (`Lavagem`), nível (`Completa`) e data
-(`Sábado`). Nove perguntas viram uma.
+## Instalação e gates
 
-O extrator reconhece:
+1. Execute [`setup.sql`](setup.sql) no Supabase e confirme `chatbot_schema_version() = 2026080801`.
+2. Configure as variáveis de [`.env.example`](.env.example), usando somente `SUPABASE_SERVICE_KEY` no backend.
+3. Faça `npm ci`.
+4. Rode `npm run check`.
+5. Rode o E2E com Evolution falsa; staging Supabase é o caminho recomendado:
 
-- **nome** em frases de apresentação ("meu nome é", "me chamo", "sou o")
-- **~90 modelos populares** e a categoria que cada um implica
-- **sinônimos que o cliente realmente usa**: `preço` → Consultar valores,
-  `só lavar` → Lavagem, `os bancos estão sujos` → Higienização interna,
-  `fim de semana` → Sábado, `quero a top` → Premium, `caminhonete` → Picape
-- **datas escritas**: `hoje`, `amanhã`, dias da semana, `dia 14`, `12/09`
+   ```bash
+   npm test
+   ```
 
-Nos menus, o cliente pode responder com o número **ou escrever do seu jeito**.
+   Em banco compartilhado, o opt-in explícito é obrigatório:
 
-### Quando a conexão cai no meio de uma conversa
+   ```bash
+   E2E_ALLOW_SHARED_SUPABASE=I_UNDERSTAND npm test
+   ```
 
-Quem escreveu durante a queda não recebeu resposta e desistiria em silêncio. Ao
-voltar, o sistema pede desculpa e **repete a pergunta que estava pendente** —
-não a abertura inteira:
+6. Faça deploy EasyPanel com uma réplica e `stop-first`.
+7. Confirme o JSON de `/health`, o read-back do webhook e só depois considere uma sonda real autorizada.
 
-> Oi! Tivemos uma instabilidade aqui e sua mensagem não chegou até mim.
-> Retomando: qual é o modelo do veículo?
+## Documentação operacional
 
-Conservador de propósito: só depois de queda de `RECOVERY_MIN_MINUTES` (5 min),
-no máximo `RECOVERY_MAX` (20) por vez, 4 s entre envios, **nunca duas vezes para
-a mesma pessoa** e **nunca para quem já está com a atendente**. Há também o
-botão **Retomar conversas** no painel Conexão, para acionar na mão.
+- [`MANUAL_DE_USO.md`](MANUAL_DE_USO.md): operação diária, painel, freio, webhook, Supabase, EasyPanel e limitações.
+- [`ROADMAP.md`](ROADMAP.md): estado local/validado/commitado/publicado/produção e próximos gates.
 
-### Comportamentos que importam
+## Limitações conhecidas
 
-- **O nome é perguntado**, não deduzido do perfil. O `pushName` do WhatsApp vai
-  para a atendente como pista, mas não é usado para tratar o cliente.
-- **Nunca informa preço.** Quem pergunta valores é registrado e encaminhado.
-- **Dúvida solta** não passa por veículo nem agenda: vai direto ao humano.
-- **Fora do horário** avisa quando a equipe retorna e registra de todo jeito.
-- **Delay de 3–5 s** antes de cada resposta, com `"digitando…"`.
-- **Grupos, status e as próprias mensagens do bot são ignorados.**
-- **Reentrega do mesmo evento é descartada** por id.
-- **Sessões no Supabase**: o handoff sobrevive a redeploy.
+- O banco atual é de uma única instância: `bot_sessions` e `triages` ainda não possuem `instance`.
+- Até existir outbox/idempotência de transporte, use uma réplica e aceite a janela residual entre `sendText` e gravação da sessão.
+- A caixa preta mantém 400 eventos em memória e é zerada em deploy.
+- Chaves, telefones e mensagens são dados sensíveis; nunca os comite.
 
-Horário: Seg–Sex 7h–18h · Sáb 7h–14h · Dom fechado (fuso `America/Fortaleza`).
+## Incidente que motivou o hotfix
 
-### O rearme de 24 h
+Em 08/08/2026 a Evolution aceitou os pedidos HTTP, mas os ACKs do WhatsApp
+retornaram `ERROR`. O freio antigo transformava uma recusa pontual em silêncio
+global. O hotfix separa destino/canal, persiste ACKs e mostra o motivo no painel.
+Isso não comprova banimento; a entrega real continua dependendo do relay e da
+conta WhatsApp.
 
-Depois do handoff o bot **silencia**. Ele só volta a fazer triagem **24 h após o
-último contato** — e a janela conta do último contato, não do handoff.
+## Estado da entrega
 
-Consequência prática: enquanto o cliente escreve, a janela é empurrada para
-frente. **O bot nunca interrompe uma conversa em andamento com a atendente**, por
-mais longa que seja.
-
-Para devolver um número ao bot antes disso, use **Reativar bot** no dashboard.
-
-O valor em vigor é verificável sem ler log:
-
-```bash
-curl -s https://startups-lavaajatoma.qfotry.easypanel.host/health | grep -o '"rearmeHoras":[0-9]*'
-```
-
----
-
-## 2 · Dashboard
-
-`/admin` — protegido por senha (`ADMIN_PASSWORD`).
-
-Identidade visual derivada da logomarca: vermelho `#C61C29`, extraído por
-amostragem de pixels da própria arte. A marca entra como **badge circular** — a
-arte traz "LAVAGENS E ESTÉTICA" em vermelho escuro, que desaparece sobre fundo
-escuro; o disco branco embutido devolve o contraste sem redesenhar nada.
-
-| Recurso | O que faz |
-|---|---|
-| Notificação | Som, notificação do navegador, badge e destaque na linha a cada nova solicitação |
-| Solicitações | Cliente, veículo, serviço, nível, preferência, quando chegou, situação |
-| **Filtro de período** | Hoje · Ontem · 7 dias · 30 dias · Tudo, ou **datas personalizadas** (de / até). Os dias são do fuso da loja, não do UTC: uma mensagem das 22h fica no dia certo |
-| Cartão de contexto | Clique na linha: o bloco completo que a atendente precisa, com **Copiar contexto** e a próxima ação sugerida |
-| Situação | Aguardando → Em atendimento → Concluída / Descartada |
-| Reativar bot | Devolve um número à triagem automática antes das 24 h |
-| Fluxo de mensagens | Últimas mensagens trocadas, entrada e saída |
-| Conexão | Status · **Conectar / Gerar QR** · **Reiniciar instância** · **Desconectar e pareear** · **Retomar conversas** · **Sincronizar webhook** — tudo sem abrir o Evolution Manager |
-| Caixa preta | Últimos eventos do sistema, com filtro por nível |
-| **Estabilidade da conexão** | Quedas, tempo fora, maior queda e disponibilidade em 24h / 7 / 30 dias — **sobrevive a deploy**, ao contrário da caixa preta |
-| **Entrega** | Pílula no topo e status por mensagem: `⏳ enviando` · `✓ no servidor` · `✓✓ entregue` · `✓✓ lida`. Alarme quando os envios param de confirmar |
-
-Para regerar os assets da marca a partir da arte:
-
-```bash
-python3 scripts/brand.py brand/logo-original.jpg
-```
-
----
-
-## 3 · Em produção, só conversa real
-
-A lista de Solicitações é da atendente. Ela não pode ter cliente inventado.
-
-Uma conversa é marcada como **teste**, na gravação, quando o número:
-
-1. é o **próprio número da instância** — conversar consigo mesmo é sempre teste;
-2. está em `TEST_PHONES` (lista separada por vírgula no `.env`).
-
-O que acontece com elas:
-
-- **Ficam ocultas por padrão** em Solicitações, no fluxo de mensagens e nos
-  números do topo. Um aviso diz quantas existem, com o botão **Mostrar**.
-- **São apagadas automaticamente no boot**, sempre que o app sobe fora de
-  ambiente de teste. O banco de produção não guarda dado de teste.
-- **Podem ser apagadas na hora** pelo botão **Apagar testes**.
-
-A limpeza só toca linhas com `is_test = true`. Atendimento real nunca é afetado —
-e isso é verificado por teste.
-
----
-
-## 4 · Caixa preta
-
-Registro em memória dos últimos **400 eventos**, visível no dashboard e em
-`/admin/api/log`. Antes disso, tudo o que o sistema fazia existia apenas no
-console do container — invisível para quem opera.
-
-| Evento | Quando |
-|---|---|
-| `webhook.recebido` | Mensagem chegou (de quem, perfil, texto) |
-| `webhook.ignorado` | Descarte, **com o motivo**: `fromMe (anti-loop)`, `grupo`, `reentrega`, `status/broadcast` |
-| `flow.passo` | Fluxo avançou para uma etapa |
-| `flow.naoEntendi` | Resposta não reconhecida (mostra o que o cliente escreveu) |
-| `flow.handoff` | Triagem concluída — traz o número da triagem |
-| `flow.silenciado` | Cliente escreveu enquanto está com a atendente |
-| `flow.rearmado` | Passaram 24 h e o bot voltou a atender |
-| `webhook.ack` | Confirmação de entrega de uma mensagem enviada |
-| `entrega.falhando` | **ERRO** — envios aceitos sem confirmação de entrega |
-| `entrega.normalizou` | A entrega voltou a confirmar |
-| `whatsapp.oscilou` | Conexão vacilou — pode ser só uma piscada |
-| `whatsapp.piscou` | Voltou em menos de 90 s: oscilação, não pane |
-| `whatsapp.voltou` | Voltou depois de queda real, com minutos fora |
-| `whatsapp.reconectando` / `.precisaQr` | Tentativa automática de religar |
-| `keepalive.ok` / `.falhou` | Anti-pause do Supabase |
-| `ping.externo` | Cron externo tocou o banco |
-| `boot.*` | Banco, Evolution, webhook, portas, limpeza de testes |
-| `admin.*` | Sincronização de webhook, reativação, limpeza |
-
-O anel **zera a cada deploy** e nunca cresce. O que precisa durar — triagens,
-mensagens, sessões — está no Supabase.
-
-```bash
-curl -s -H "Authorization: Bearer SENHA" \
-  'https://startups-lavaajatoma.qfotry.easypanel.host/admin/api/log?level=error'
-```
-
----
-
-## 5 · Instalação
-
-### Banco
-
-Rode [`setup.sql`](setup.sql) no SQL Editor do Supabase. É idempotente — rodar de
-novo não quebra nada. Cria `triages`, `bot_sessions` e `messages`, e corrige
-colunas de versões anteriores.
-
-### Variáveis
-
-Copie `.env.example` para `.env`. Os dois erros que custam mais tempo:
-
-```bash
-# ✗ ERRADO — /manager é o frontend web, não a API
-EVOLUTION_API_URL=https://sua-evolution.host/manager
-# ✓ CERTO
-EVOLUTION_API_URL=https://sua-evolution.host
-
-# ✗ ERRADO — o HTTPS público atende na 443, não na 3000
-PUBLIC_URL=https://seu-app.host:3000
-# ✓ CERTO
-PUBLIC_URL=https://seu-app.host
-```
-
-`EVOLUTION_INSTANCE` é o **nome** da instância, não o UUID:
-
-```bash
-curl -s https://sua-evolution.host/instance/fetchInstances -H "apikey: SUA_KEY"
-```
-
-### Rodar
-
-```bash
-npm install && npm start
-```
-
----
-
-## 6 · Deploy no EasyPanel
-
-1. **Build:** `Dockerfile` — **não** Nixpacks.
-2. **Variáveis:** as mesmas do `.env`, no nível do **serviço**.
-3. **Domínio → porta 3000.** O app também escuta na 3001, então qualquer uma
-   das duas funciona.
-4. **Deploy.**
-
-O webhook da Evolution é apontado **automaticamente no boot** a partir de
-`PUBLIC_URL`. Não precisa mexer no Evolution Manager.
-
-Depois do deploy, confirme:
-
-```bash
-curl -s https://startups-lavaajatoma.qfotry.easypanel.host/health
-```
-
-`ready: true` significa banco e WhatsApp de pé. Se algo faltar, o corpo da
-resposta diz **o que** falta — e o dashboard mostra o mesmo em um banner.
-
-> Se o dashboard mostrar um erro que já foi corrigido, a aba está com o
-> JavaScript antigo. O selo de build no rodapé do login diz qual versão está
-> carregada, e a página avisa sozinha quando o servidor está mais novo.
-> **Cmd+Shift+R** resolve.
-
----
-
-## 7 · Diagnóstico
-
-Antes de abrir o Evolution Manager para investigar qualquer coisa:
-
-```bash
-npm run doctor
-```
-
-Confere variáveis, tabelas e colunas do Supabase, fuso dos timestamps, conexão
-da instância, URL do webhook e — importante — se o evento `SEND_MESSAGE` está
-habilitado, que faz o bot responder a si mesmo em **loop infinito**. Cada falha
-vem com o conserto.
-
-## 8 · Testes
-
-```bash
-npm test
-```
-
-**229 verificações end-to-end**: as 6 etapas, extração de contexto, recomendação
-de serviço e nível, respostas em texto livre, dúvida solta, sessão de versão
-antiga, anti-loop, grupos, idempotência, handoff, rearme de 24 h, delay,
-caixa preta, ping, filtro de período **com fuso correto**, ocultação e limpeza
-de testes, autenticação e assets da marca.
-
-Sobe uma Evolution **falsa** — nenhuma mensagem real é enviada — usa o Supabase
-de verdade, declara seus próprios números em `TEST_PHONES` e apaga tudo no final.
-
-### Carga
-
-```bash
-npm run carga        # 40 conversas simultâneas
-npm run carga 100
-```
-
-Mede vazão, integridade sob carga, corrida no mesmo número e o volume de dados
-gerado por conversa. Medido em 08/08/2026, 40 conversas de 10 mensagens:
-
-| | |
-|---|---|
-| Vazão | ~40 mensagens/s |
-| Por mensagem | ~25 ms |
-| Simultâneas no pico | 40 |
-| Triagens íntegras | 40/40, zero duplicadas |
-| Dados | 2,5 KB por conversa · ~7 MB/mês a 100 conversas/dia |
-
-**O gargalo não é a aplicação, é o WhatsApp.** Uma instância Baileys, um número:
-o limite prático de envio da Meta chega muito antes dos 40 msg/s. Para volume
-maior, o caminho é mais números/instâncias, não mais CPU.
-
-Duas coisas dependem de `replicas = 1`: a deduplicação de reentrega e a fila
-por telefone são **em memória**. Escalar horizontalmente exige mover as duas
-para o banco — está anotado, não feito.
-
----
-
-## 9 · A conexão do WhatsApp pode cair?
-
-**Pode, e vai cair de novo em algum momento.** A Evolution usa Baileys, um
-cliente não oficial do WhatsApp Web: a sessão é um "aparelho conectado" e o
-WhatsApp pode invalidá-la a qualquer momento. Não existe configuração que
-impeça isso.
-
-O que existe é redução de risco e recuperação rápida:
-
-| Medida | O que resolve |
-|---|---|
-| Volume + Postgres na Evolution | A sessão sobrevive a restart do container (já estava certo) |
-| `zeroDowntime = false` na Evolution | Sem isso, um redeploy sobe dois containers com a MESMA credencial por alguns segundos; o WhatsApp vê dois aparelhos com a mesma identidade e derruba a sessão |
-| Monitor a cada 60 s | Antes, o status era medido só no boot: caiu às 09:45 e o `/health` seguiu dizendo `ready: true` por horas |
-| Reconexão automática | Queda transitória volta sozinha, sem ninguém olhar |
-| Alarme com QR no dashboard | Quando precisa de QR, ele aparece no próprio alerta com o passo a passo |
-| **Retomada automática** | Ao voltar de uma queda longa, o bot pede desculpa e repete a pergunta pendente para quem ficou sem resposta — o lead não se perde em silêncio |
-| Botões Conectar / Reiniciar | Religar pelo dashboard, sem abrir o Evolution Manager |
-| Painel da conexão oficial | Migrar para a Cloud API da Meta pelo próprio dashboard |
-| **Imagem da Evolution desatualizada** | `v2.3.7` é de 05/12/2025. O Baileys embutido envelhece e o WhatsApp derruba clientes antigos — **atualizar a imagem é o que mais reduz queda** |
-| `whatsapp.caiu` na caixa preta | Fica registrado, com desde quando e quantas tentativas |
-
-### Não empilhe remédios numa oscilação
-
-Lição paga em 08/08/2026. A conexão vacilou, e em vez de esperar eu reiniciei,
-forcei logout, repareei, troquei a imagem e reverti — cada passo descarta a
-credencial em uso e reembaralha a sessão. O que era uma piscada de segundos
-virou horas de instabilidade **causada pela intervenção**, não pela falha.
-
-Por isso o monitor agora separa `whatsapp.piscou` (< 90 s, ruído) de
-`whatsapp.voltou` (queda real). Regra de operação:
-
-1. **Piscou e voltou sozinho?** Não faça nada. O monitor religa.
-2. **Fora por minutos?** Aí sim: Conectar → Reiniciar → Desconectar e pareear,
-   um de cada vez, esperando entre eles.
-3. **Nunca** troque a imagem da Evolution com o atendimento no ar — a 2.4.0+
-   exige licença e derruba tudo (aconteceu). A v2.3.7 é a última livre.
-
-### Aceite não é entrega — a lição que custou mais caro
-
-`sendText` responder `status: PENDING` significa apenas que **a Evolution
-aceitou**. Não diz nada sobre a mensagem ter chegado. Em 08/08/2026 tratei uma
-coisa como a outra e passei horas achando que o envio funcionava enquanto o
-cliente não recebia nada.
-
-Agora cada envio guarda o `wa_id` da mensagem, o webhook escuta
-`MESSAGES_UPDATE` e o ACK evolui o status:
-
-```
-⏳ PENDING  →  ✓ SERVER_ACK  →  ✓✓ DELIVERY_ACK  →  ✓✓ READ
-   aceito       no servidor        no celular         lida
-
-✖ ERROR  →  o WhatsApp RECUSOU a mensagem. Não é demora.
-```
-
-**`ERROR` tem remédio diferente.** Sem confirmação pode ser sessão ruim, e
-repareaar resolve. `ERROR` é recusa: repareamento repetido tende a piorar. Nesse
-caso, primeiro verifique no aparelho se o número tem aviso de restrição, e teste
-enviar uma mensagem **manualmente** — se a manual também falhar, é a conta.
-
-### O freio de envio
-
-Descoberto em 08/08/2026, depois de instrumentar a entrega: **todo** envio deste
-número passou a voltar `ERROR` — para qualquer destinatário, para o `@lid` do
-contato, e até para o próprio número. E o bot continuou respondendo por horas.
-Duas coisas pioravam ao mesmo tempo: cada tentativa recusada reforçava o padrão
-de automação no número, e o cliente ficava sem resposta sem ninguém saber.
-
-Agora o app tem um **freio**: `FREIO_REJEICOES` recusas seguidas (padrão 3) e o
-envio para sozinho.
-
-- a resposta que deixaria de sair é gravada com status `BLOQUEADO` e aparece no
-  fluxo como **⛔ NÃO ENVIADA — freio de segurança**;
-- o painel **Envio de mensagens** fica vermelho com o motivo e a hora;
-- a caixa preta grava `freio.engatado` e `freio.naoEnviou`;
-- o atendimento continua **manual, no mesmo WhatsApp** — a triagem já gravada
-  fica no dashboard com o contexto que o bot conseguiu extrair.
-
-O freio **não** religa sozinho por tempo. Só sai de duas formas:
-
-1. **Testar envio** no painel — manda *uma* mensagem e espera o ACK real. Se for
-   entregue, o freio sai automaticamente;
-2. **Liberar envio** — decisão manual de quem opera.
-
-Isso é deliberado: religar por conta própria e voltar a insistir foi exatamente
-o comportamento que agravou o problema.
-
-Se nada dos últimos 30 min chegar a `DELIVERY_ACK`, o dashboard levanta alarme
-vermelho e a caixa preta grava `entrega.falhando`. **A falha silenciosa deixou
-de ser silenciosa** — é o que permite afirmar que o bot funciona em vez de supor.
-
-`npm run doctor` também checa isso, e reclama se `MESSAGES_UPDATE` não estiver
-habilitado no webhook.
-
-### Quando a mensagem é aceita mas não chega
-
-Sintoma visto em 08/08/2026: a Evolution respondia `state: open`, aceitava o
-`sendText` com `status: PENDING`, guardava a mensagem — **e o cliente não
-recebia**. O socket estava autenticado de verdade (uma consulta de número
-retornou o nome do contato), então não era sessão morta.
-
-**Reiniciar não resolve** esse caso: o estado interno continua "conectado". O
-que resolve é **logout**, que força credencial nova. Por isso o painel Conexão
-tem o botão **Desconectar e pareear** — ele encerra a sessão e devolve o QR na
-tela.
-
-Ordem para tentar, do menos ao mais invasivo:
-
-1. **Conectar / Gerar QR** — queda comum, religa
-2. **Reiniciar instância** — estado travado
-3. **Desconectar e pareear** — aceita o envio mas não entrega
-
-### Recusa em série não é problema de sessão — o que os dados mostraram
-
-Em 08/08/2026, com o rastreio de entrega já no ar, o quadro foi este:
-
-| Evidência | Leitura |
-|---|---|
-| `state: open`, `ownerJid` correto | a sessão está autenticada |
-| consulta de número devolve nome do contato | o socket funciona e é autorizado |
-| mensagens **recebidas** chegam normalmente | o canal de entrada está de pé |
-| **todo** envio volta `ERROR` — contato, `@lid` e o próprio número | não é endereçamento, não é destinatário |
-| a mesma imagem `v2.3.7` entregava 17 h antes, na conversa em que o cliente respondeu cada pergunta | não é a build nem o código |
-| **pareamento novo no mesmo dia não resolveu** | não é estado de sessão |
-| nenhum aviso da Meta no aparelho | não é banimento comunicado |
-
-Conclusão: o que mudou está do lado da **conta/dispositivo no WhatsApp**, não
-aqui. Restrição de envio em dispositivo conectado não vem com aviso — o
-aplicativo continua normal e as consultas continuam funcionando; só o relay das
-mensagens do dispositivo é recusado.
-
-O que **não** fazer nesse estado: repareaar de novo, reiniciar em série, trocar a
-imagem. Já foi tentado e só piora. O que fazer: **atender manualmente**, deixar o
-número quieto (o freio faz isso sozinho) e testar o envio pelo dashboard antes de
-religar. Se a recusa persistir, o caminho durável é a Cloud API — seção abaixo.
-
-### A API oficial resolve — mas tem uma consequência que decide tudo
-
-O dashboard tem o painel **Conexão oficial · API do WhatsApp (Meta)** para
-configurar a Cloud API: nome da instância, número, WABA/Business ID e token. O
-token vai direto para a Evolution, não é gravado aqui nem aparece em log.
-
-**Só que um número registrado na Cloud API sai do aplicativo do WhatsApp.**
-Não é possível usar o mesmo número na Cloud API e no app (nem no WhatsApp
-Business) ao mesmo tempo. Ao registrar:
-
-- o número **deixa de funcionar no celular**;
-- o histórico do app **não migra**;
-- todo atendimento humano passa a acontecer por uma caixa de entrada web
-  (Meta Business Suite, Chatwoot, ou este dashboard com envio implementado).
-
-Como o requisito é **atendente assumindo no mesmo número**, isso importa:
-
-| Caminho | O bot não cai | Atendente responde pelo celular | Custo |
-|---|---|---|---|
-| Baileys no número atual (hoje) | cai raro, avisa e religa | **sim** | grátis |
-| Cloud API no número atual | **não cai** | **não** — só por inbox web | por conversa |
-| Cloud API em número novo, app no atual | **não cai** | sim, no número pessoal | por conversa |
-
-O terceiro é o único que tem as duas coisas — exige um segundo número.
-
-Enquanto o canal for Baileys, o realista é: cai raramente, o sistema avisa na
-hora, religa sozinho e o QR está a um clique no dashboard.
-
----
-
-## 10 · O Supabase vai pausar?
-
-Resposta honesta: **no plano free, não existe garantia.** O plano pausa projetos
-após **7 dias sem atividade** e não oferece nenhuma opção para desligar isso.
-Dois projetos desta organização já pausaram assim.
-
-O que existe são **duas camadas independentes** que atacam o gatilho:
-
-| Camada | Como | Ponto fraco |
-|---|---|---|
-| Keepalive interno | O app consulta o banco a cada 6 h (`KEEPALIVE_HOURS`) | Morre com o container: se o app ficar dias fora do ar, para de tocar o banco |
-| GitHub Actions | `.github/workflows/keepalive.yml` chama `/ping` a cada 6 h | Roda fora do seu servidor. O GitHub desativa agendamentos em repositórios sem commits por 60 dias — reative na aba **Actions** |
-
-`/ping` é público de propósito: toca o banco, não expõe dado algum e não precisa
-de credencial. Qualquer cron externo serve (cron-job.org, UptimeRobot).
-
-Com as duas camadas são ~56 toques em cada janela de 7 dias, e as duas teriam de
-falhar juntas para o projeto pausar. **Mas a única garantia contratual é o plano
-Pro** (US$ 25/mês por organização), que remove o auto-pause e libera mais
-projetos ativos.
-
-Um detalhe: o free permite **2 projetos ativos** por organização, e esta está
-exatamente nos 2. Despausar outro pode afetar um dos ativos.
-
----
-
-## 11 · Estrutura
-
-```
-src/
-  index.js      orquestração, portas, /health, /ping, auto-sync do webhook,
-                limpeza de testes no boot
-  evolution.js  cliente da Evolution API v2 (normaliza base URL, sendText, presença)
-  webhook.js    parsing do MESSAGES_UPSERT + filtros + dedupe + contador em voo
-  flow.js       as 6 etapas, árvore dinâmica, rearme de 24 h, handoff
-  catalog.js    serviços, níveis, categorias, modelos e sinônimos
-  extract.js    extração de contexto do texto livre (a regra central)
-  database.js   Supabase: triagens, sessões, mensagens, filtros, keepalive, purge
-  admin.js      rotas do dashboard
-  recorder.js   caixa preta
-  serial.js     fila por telefone (evita corrida na mesma conversa)
-  freio.js      freio de envio: para de enviar quando o WhatsApp recusa
-  testflag.js   decide o que é conversa de teste
-  env.js        carrega o .env antes dos outros módulos
-public/
-  admin.html    dashboard (autocontido, sem CDN)
-  badge.png     badge circular da marca · logo.png, favicon.png, apple-touch-icon.png
-brand/
-  logo-original.jpg
-scripts/
-  doctor.js     diagnóstico
-  e2e.js        testes
-  carga.js      vazão, concorrência e volume
-  brand.py      regenera os assets da marca
-.github/workflows/
-  keepalive.yml segunda camada anti-pause
-setup.sql       schema
-```
-
----
-
-## 12 · API
-
-Rotas de `/admin/api` exigem `Authorization: Bearer <ADMIN_PASSWORD>`.
-
-| Método | Rota | Função |
-|---|---|---|
-| `POST` | `/webhook/messages` | Recebe da Evolution (`MESSAGES_UPSERT`) |
-| `GET` | `/health` | Saúde, config em vigor e resumo da caixa preta |
-| `GET` | `/ping` | Toca o banco (público, sem dados) |
-| `POST` | `/admin/api/login` | Devolve o token |
-| `GET` | `/admin/api/status` | WhatsApp, webhook e diagnóstico do boot |
-| `POST` | `/admin/api/webhook/sync` | Corrige o webhook na Evolution |
-| `GET` | `/admin/api/triages` | Lista solicitações — `?de=&ate=&testes=1` |
-| `PUT` | `/admin/api/triages/:id` | Muda a situação |
-| `POST` | `/admin/api/triages/seen` | Marca notificações como vistas |
-| `DELETE` | `/admin/api/testes` | Apaga as conversas de teste |
-| `POST` | `/admin/api/sessions/:phone/reactivate` | Devolve o número ao bot |
-| `GET` | `/admin/api/messages` | Fluxo de mensagens — mesmos filtros |
-| `GET` | `/admin/api/stats` | Números do topo — mesmos filtros |
-| `GET` | `/admin/api/log` | Caixa preta em memória (`?level=error`) |
-| `GET` | `/admin/api/conexao/historico` | Quedas persistidas (`?dias=7`) |
-| `GET` | `/admin/api/entrega` | Confirmações de entrega (`?minutos=30`) + freio |
-| `GET` | `/admin/api/envio/freio` | Estado do freio de envio |
-| `POST` | `/admin/api/envio/sonda` | Envia **uma** mensagem e espera o ACK (`{numero}`) |
-| `POST` | `/admin/api/envio/liberar` | Religa o envio automático |
-| `POST` | `/admin/api/envio/bloquear` | Para o envio manualmente (`{motivo}`) |
-| `GET` | `/admin/api/qr` | QR Code para reconectar |
-| `POST` | `/admin/api/whatsapp/conectar` | Gera o QR / religa a sessão |
-| `POST` | `/admin/api/whatsapp/reiniciar` | Reinicia a instância |
-| `POST` | `/admin/api/whatsapp/desconectar` | Logout + QR do novo pareamento |
-| `POST` | `/admin/api/whatsapp/oficial` | Cria conexão pela Cloud API da Meta |
-| `POST` | `/admin/api/retomar` | Retoma conversas paradas (`{horas}`) |
-| `GET` | `/admin/api/build` | Selo do build |
-
-`de` e `ate` são datas `YYYY-MM-DD` **no fuso da loja** (`TIMEZONE`); `ate`
-inclui o dia inteiro. Data inválida é ignorada em vez de quebrar a rota.
-
----
-
-## 13 · Armadilhas já pagas
-
-Memória institucional. Cada uma custou tempo e está coberta por teste ou
-verificação — não reintroduza.
-
-| Armadilha | Sintoma | Causa |
-|---|---|---|
-| `/manager` na base URL | Chamadas "funcionam" sem fazer nada | `/manager` é o frontend: responde 200 com HTML |
-| Payload v1 no `sendText` | 400 na Evolution | A v2 exige `{number, text}` achatado |
-| Ler `body.remoteJid` | Nenhuma mensagem entra | A v2 manda tudo sob `data.key.remoteJid` |
-| Evento `SEND_MESSAGE` ligado | **Loop infinito** | O bot recebe webhook das próprias respostas |
-| `:3000` na URL do webhook | Evolution não alcança | O HTTPS público atende na 443 |
-| `dotenv.config()` no corpo do `index.js` | `ADMIN_PASSWORD` ignorada, senha vira `admin` | Imports ESM são avaliados antes dos statements |
-| `node:20-alpine` | "native WebSocket not found" | `supabase-js` exige `WebSocket` global (Node 22+) |
-| `TIMESTAMP` sem fuso | "3 horas" aparece como "4 minutos" | O navegador lê o valor UTC como hora local |
-| `norm()` para exibir | "Sábado pela **manha**" | `norm()` remove acentos — serve para comparar, não para mostrar |
-| Responder 200 só após processar | Evolution reentrega o evento | O atendimento leva 3–5 s de propósito |
-| Env de nível de projeto no EasyPanel | Aponta para outro Supabase sem ninguém configurar | Serviços herdam o env do projeto; defina no **serviço** |
-| Palavra compartilhada nos menus | "quero lavagem" não era entendido | "quero" empatava as opções — hoje há lista de ruído e sinônimos |
-| `is_test` só na triagem | Sessão de teste sobrevivia à limpeza | Precisa marcar também em `bot_sessions` e `messages` |
-| Aspas duplas em `--body` do `gh` | Comando some no shell | Crases viram substituição de comando; use heredoc |
-| Data local comparada com limite UTC | Mensagem das 22h caía no dia seguinte | Sobral é UTC−3: 00:00 local é 03:00Z |
-| Sem fila por telefone | "oi" + nome juntos → boas-vindas duas vezes e nome perdido | As duas mensagens liam a mesma sessão em paralelo |
-| Estado do WhatsApp medido só no boot | `/health` dizia `ready: true` com o atendimento parado há horas | Faltava monitor periódico |
-| Rotina de retomada sem isolamento de teste | A suíte gravou mensagem fantasma na conversa de um cliente real | Lia sessões `is_test = false` mesmo em `NODE_ENV=test` |
-| Histórico de quedas só em memória | Impossível responder "quantas vezes caiu?" — o anel zera a cada deploy | Faltava persistir em `connection_events` |
-| Tratar `PENDING` como sucesso | Horas achando que o envio funcionava com o cliente sem receber nada | Aceite ≠ entrega; faltava escutar `MESSAGES_UPDATE`. O ACK real era `ERROR` |
-| Auto-correção do webhook só olhando a URL | `MESSAGES_UPDATE` nunca era adicionado: a URL estava certa e o boot retornava antes | Precisa comparar a **lista de eventos** também |
-| `zeroDowntime` em serviço com sessão | Sessão do WhatsApp invalidada em redeploys | Dois containers com a mesma credencial ao mesmo tempo |
-| Continuar enviando depois de `ERROR` | O bot "conversou" horas sozinho e cada tentativa piorava o número | Recusa em série tem de **parar o envio** — é o freio |
-| Concluir banimento por causa da recusa | Diagnóstico errado apresentado ao cliente | Restrição de envio em dispositivo conectado **não** vem com aviso da Meta; ausência de aviso não prova nada nos dois sentidos |
+O build local foi validado com `npm run check` e **272/272 verificações E2E**.
+Commit, push, deploy e confirmação do runtime público permanecem registrados no
+[`ROADMAP.md`](ROADMAP.md) até serem executados.

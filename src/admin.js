@@ -9,22 +9,43 @@ import express from 'express';
 import {
   getTriages, updateTriageStatus, getMessages, getStats, contarTestes,
   purgeTestes, db, resetSession, resumoConexao, resumoEntrega,
-  logMessage, statusPorWaId
+  logMessage, statusPorWaId, listarDestinosBloqueados
 } from './database.js';
 import {
   listInstances, checkConnection, getQrCode, getWebhook, setWebhook, getConfig,
   reconnect, restartInstance, criarInstanciaOficial, logoutEPareaerDeNovo,
-  sendText
+  sendText, webhookTemAutenticacao
 } from './evolution.js';
-import { ver as verFreio, liberar as liberarFreio, bloquear as bloquearFreio, registrarEntrega } from './freio.js';
+import { ver as verFreio } from './freio.js';
+import { reconciliarFreioPersistido, registrarEventoEReconciliar } from './canal.js';
 import { list as listarEventos, resumo as resumoEventos, info } from './recorder.js';
 import { retomarConversas } from './flow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
-// Tardia: no import o .env pode ainda não estar carregado.
-const password = () => str('ADMIN_PASSWORD') || str('DASHBOARD_PASSWORD') || 'admin';
+// Tardia: no import o .env pode ainda não estar carregado. Sem segredo, o
+// painel falha fechado; nunca volta silenciosamente para "admin".
+const password = () => str('ADMIN_PASSWORD') || str('DASHBOARD_PASSWORD') || null;
+const sessoesAdmin = new Map();
+const tentativasLogin = new Map();
+const SESSAO_MS = 8 * 3600_000;
+let janelaGlobalLogin = { desde: Date.now(), falhas: 0 };
+
+function limparControlesAdmin() {
+  const agora = Date.now();
+  for (const [token, expira] of sessoesAdmin) {
+    if (expira <= agora) sessoesAdmin.delete(token);
+  }
+  for (const [ip, item] of tentativasLogin) {
+    if (agora - item.desde > 30 * 60_000 && item.bloqueadoAte <= agora) tentativasLogin.delete(ip);
+  }
+  while (sessoesAdmin.size > 1000) sessoesAdmin.delete(sessoesAdmin.keys().next().value);
+  while (tentativasLogin.size > 5000) tentativasLogin.delete(tentativasLogin.keys().next().value);
+  if (agora - janelaGlobalLogin.desde > 15 * 60_000) {
+    janelaGlobalLogin = { desde: agora, falhas: 0 };
+  }
+}
 
 function sameSecret(a, b) {
   const ba = Buffer.from(String(a));
@@ -32,12 +53,51 @@ function sameSecret(a, b) {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
-function requireAuth(req, res, next) {
+function tokenDaRequest(req) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token || !sameSecret(token, password())) {
+  if (header.startsWith('Bearer ')) return header.slice(7);
+  const cookies = Object.fromEntries(String(req.headers.cookie || '')
+    .split(';').map(v => v.trim()).filter(v => v.includes('=')).map(v => {
+      const i = v.indexOf('=');
+      return [decodeURIComponent(v.slice(0, i)), decodeURIComponent(v.slice(i + 1))];
+    }));
+  return cookies.ma_admin_session || '';
+}
+
+function novaSessao() {
+  limparControlesAdmin();
+  const token = crypto.randomBytes(32).toString('base64url');
+  sessoesAdmin.set(token, Date.now() + SESSAO_MS);
+  return token;
+}
+
+function sessaoValida(token) {
+  const expira = sessoesAdmin.get(token);
+  if (!expira || expira <= Date.now()) {
+    if (token) sessoesAdmin.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function cookieSessao(req, token, maxAge = Math.floor(SESSAO_MS / 1000)) {
+  const seguro = req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0] === 'https';
+  return [
+    `ma_admin_session=${encodeURIComponent(token)}`,
+    'Path=/', 'HttpOnly', 'SameSite=Strict', seguro ? 'Secure' : null,
+    `Max-Age=${maxAge}`
+  ].filter(Boolean).join('; ');
+}
+
+function requireAuth(req, res, next) {
+  if (!password()) {
+    return res.status(503).json({ error: 'ADMIN_PASSWORD não configurada' });
+  }
+  const token = tokenDaRequest(req);
+  if (!sessaoValida(token)) {
     return res.status(401).json({ error: 'Não autorizado' });
   }
+  req.adminToken = token;
   next();
 }
 
@@ -95,7 +155,20 @@ function publicUrlFor(req, configured) {
 }
 
 export function setupAdmin(app, { publicUrl, state = {} }) {
-  app.set('trust proxy', true);
+  // EasyPanel é o único proxy na frente do container. Confiar em qualquer
+  // X-Forwarded-For permitiria burlar o rate limit com IPs inventados.
+  app.set('trust proxy', 1);
+  app.use('/admin', (req, res, next) => {
+    res.set({
+      'Content-Security-Policy': "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+    });
+    if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
+    next();
+  });
   /* ---------- página ---------- */
   // no-store no HTML: uma aba aberta durante um deploy antigo continuava
   // rodando o JS velho e mostrando erros que já não existiam no servidor.
@@ -127,8 +200,45 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   app.post('/admin/api/login', (req, res) => {
     const { password: password_ } = req.body || {};
     const pw = password();
-    if (password_ && sameSecret(password_, pw)) return res.json({ token: pw });
+    if (!pw) return res.status(503).json({ error: 'ADMIN_PASSWORD não configurada no servidor' });
+
+    const ip = req.ip || req.socket?.remoteAddress || 'desconhecido';
+    const agora = Date.now();
+    limparControlesAdmin();
+    if (janelaGlobalLogin.falhas >= 100) {
+      return res.status(429).json({ error: 'Login temporariamente limitado. Aguarde 15 minutos.' });
+    }
+    const controle = tentativasLogin.get(ip) || { falhas: 0, desde: agora, bloqueadoAte: 0 };
+    if (controle.bloqueadoAte > agora) {
+      return res.status(429).json({ error: 'Muitas tentativas. Aguarde 15 minutos.' });
+    }
+    if (agora - controle.desde > 15 * 60_000) {
+      controle.falhas = 0;
+      controle.desde = agora;
+    }
+
+    if (password_ && sameSecret(password_, pw)) {
+      tentativasLogin.delete(ip);
+      const token = novaSessao();
+      res.setHeader('Set-Cookie', cookieSessao(req, token));
+      const resposta = { ok: true, expiresIn: Math.floor(SESSAO_MS / 1000) };
+      // A suíte usa bearer para testar a API; produção mantém o token somente
+      // no cookie HttpOnly, fora do alcance do JavaScript do painel.
+      if (process.env.NODE_ENV === 'test') resposta.token = token;
+      return res.json(resposta);
+    }
+
+    controle.falhas++;
+    janelaGlobalLogin.falhas++;
+    if (controle.falhas >= 5) controle.bloqueadoAte = agora + 15 * 60_000;
+    tentativasLogin.set(ip, controle);
     return res.status(401).json({ error: 'Senha incorreta' });
+  });
+
+  app.post('/admin/api/logout', requireAuth, (req, res) => {
+    sessoesAdmin.delete(req.adminToken);
+    res.setHeader('Set-Cookie', cookieSessao(req, '', 0));
+    res.json({ ok: true });
   });
 
   /* ---------- tudo abaixo exige token ---------- */
@@ -139,12 +249,30 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     let cfg = { baseUrl: null, instance: null };
     try { cfg = getConfig(); } catch (e) { cfg = { baseUrl: null, instance: null, error: e.message }; }
     const base = publicUrlFor(req, publicUrl);
+    const freio = verFreio();
+    let destinosBloqueados = [];
+    let destinosBloqueadosErro = null;
+    try {
+      destinosBloqueados = await listarDestinosBloqueados({
+        limite: Math.max(1, Number(process.env.FREIO_DESTINO_REJEICOES) || 2),
+        incluirTestes: process.env.NODE_ENV === 'test'
+      });
+    } catch (e) {
+      destinosBloqueadosErro = e.message;
+    }
     const out = {
       baseUrl: cfg.baseUrl, instance: cfg.instance,
       publicUrl: base, publicUrlSource: publicUrl ? 'PUBLIC_URL' : 'request',
-      boot: { db: state.db, env: state.env, whatsapp: state.whatsapp },
+      ready: false,
+      operational: false,
+      boot: {
+        db: state.db, canal: state.canal, env: state.env,
+        whatsapp: state.whatsapp, webhook: state.webhook
+      },
       entrega: state.entrega,
-      freio: verFreio()
+      freio,
+      destinosBloqueados,
+      destinosBloqueadosErro
     };
 
     try {
@@ -160,16 +288,38 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     try {
       const wh = await getWebhook();
       const expected = `${base}/webhook/messages`;
+      const events = wh?.events || [];
+      const authenticated = webhookTemAutenticacao(wh);
       out.webhook = {
         url: wh?.url || null,
         enabled: !!wh?.enabled,
-        events: wh?.events || [],
+        events,
         expected,
-        correct: !!wh?.enabled && wh?.url === expected
+        correct: !!wh?.enabled && wh?.url === expected && authenticated &&
+          ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'].every(e => events.includes(e)),
+        authenticated
       };
+      state.webhook = out.webhook.correct
+        ? { ok: true, error: null, url: wh?.url || null, eventos: events, autenticado: true }
+        : {
+            ok: false,
+            error: 'URL, eventos ou autenticação do webhook divergentes',
+            url: wh?.url || null,
+            eventos: events,
+            autenticado: authenticated
+          };
     } catch (e) {
       out.webhook = { error: e.message };
+      state.webhook = { ...state.webhook, ok: false, error: e.message };
     }
+
+    // O mesmo snapshot não pode dizer ready=true e, logo abaixo, mostrar a
+    // sonda atual do WhatsApp/webhook em falha.
+    out.ready = !!(
+      state.db?.ok && state.canal?.ok &&
+      out.whatsapp?.connected && out.webhook?.correct
+    );
+    out.operational = out.ready && !freio.bloqueado;
 
     res.json(out);
   }));
@@ -183,9 +333,31 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
       });
     }
     const url = `${base}/webhook/messages`;
-    const result = await setWebhook(url);
+    await setWebhook(url);
+    let confirmado = null;
+    for (let tentativa = 0; tentativa < 3; tentativa++) {
+      if (tentativa) await new Promise(resolve => setTimeout(resolve, 250));
+      const atual = await getWebhook();
+      const eventos = atual?.events || [];
+      if (atual?.enabled && atual?.url === url &&
+          ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'].every(e => eventos.includes(e)) &&
+          webhookTemAutenticacao(atual)) {
+        confirmado = atual;
+        break;
+      }
+    }
+    if (!confirmado) {
+      return res.status(502).json({
+        error: 'A Evolution respondeu ao sync, mas não confirmou o header secreto. Verifique a versão/configuração.'
+      });
+    }
+    state.webhook = {
+      ok: true, error: null, url,
+      eventos: confirmado.events || [], autenticado: true
+    };
     info('admin.webhookSincronizado', { url });
-    res.json({ ok: true, url, result });
+    // Não devolve a resposta crua: ela contém o header secreto do webhook.
+    res.json({ ok: true, url, authenticated: true });
   }));
 
   api.get('/instances', wrap(async (_req, res) => res.json(await listInstances())));
@@ -219,7 +391,7 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
       return res.status(400).json({ error: `Preencha: ${faltando.join(', ')}` });
     }
 
-    const resultado = await criarInstanciaOficial({ instanceName, number, token, businessId });
+    await criarInstanciaOficial({ instanceName, number, token, businessId });
     info('admin.conexaoOficialCriada', {
       instancia: instanceName,
       numero: String(number).replace(/\D/g, '').slice(0, 6) + '…',
@@ -228,8 +400,7 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     res.json({
       ok: true,
       instancia: instanceName,
-      proximoPasso: `Troque EVOLUTION_INSTANCE para "${instanceName}" nas variáveis do EasyPanel e faça redeploy.`,
-      resultado
+      proximoPasso: `Troque EVOLUTION_INSTANCE para "${instanceName}" nas variáveis do EasyPanel e faça redeploy.`
     });
   }));
 
@@ -335,7 +506,13 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
 
   /** Apaga as conversas de teste, deixando só atendimento real. */
   api.delete('/testes', wrap(async (_req, res) => {
-    const apagados = await purgeTestes();
+    // A suíte usa o mesmo Supabase, porém só pode limpar os próprios números.
+    // Em produção o botão mantém o comportamento administrativo de apagar
+    // todas as linhas explicitamente marcadas como teste.
+    const phones = process.env.NODE_ENV === 'test'
+      ? str('TEST_PHONES').split(',').map(v => v.trim()).filter(Boolean)
+      : null;
+    const apagados = await purgeTestes({ phones });
     info('admin.testesApagados', apagados);
     res.json({ ok: true, apagados });
   }));
@@ -346,13 +523,16 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
    */
   api.get('/conexao/historico', wrap(async (req, res) => {
     const dias = Math.min(Math.max(Number(req.query.dias) || 7, 1), 90);
-    res.json(await resumoConexao({ dias }));
+    res.json(await resumoConexao({ dias, instance: getConfig().instance }));
   }));
 
   /** As mensagens estão sendo ENTREGUES? Aceite não é entrega. */
   api.get('/entrega', wrap(async (req, res) => {
     const minutos = Math.min(Math.max(Number(req.query.minutos) || 30, 5), 1440);
-    res.json({ ...(await resumoEntrega({ minutos })), freio: verFreio() });
+    res.json({
+      ...(await resumoEntrega({ minutos, incluirTestes: process.env.NODE_ENV === 'test' })),
+      freio: verFreio()
+    });
   }));
 
   /* ---------- freio de envio ---------- */
@@ -360,13 +540,23 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
   api.get('/envio/freio', wrap(async (_req, res) => res.json(verFreio())));
 
   /** Liberação manual — deliberadamente manual: religar sozinho agrava. */
-  api.post('/envio/liberar', wrap(async (_req, res) => {
-    res.json({ ok: true, freio: liberarFreio('dashboard') });
+  api.post('/envio/liberar', wrap(async (req, res) => {
+    if (req.body?.confirmar !== 'LIBERAR_MANUALMENTE') {
+      return res.status(400).json({
+        error: 'Override manual não confirmado. Prefira uma sonda entregue, que libera o canal automaticamente.'
+      });
+    }
+    const motivo = String(req.body?.motivo || 'override manual pela dashboard').slice(0, 200);
+    const { estado } = await registrarEventoEReconciliar(
+      'MANUAL_RELEASE', motivo, 'dashboard'
+    );
+    res.json({ ok: true, freio: estado });
   }));
 
   api.post('/envio/bloquear', wrap(async (req, res) => {
     const motivo = String(req.body?.motivo || 'bloqueio manual pela dashboard').slice(0, 200);
-    res.json({ ok: true, freio: bloquearFreio(motivo) });
+    const { estado } = await registrarEventoEReconciliar('MANUAL_BLOCK', motivo, 'dashboard');
+    res.json({ ok: true, freio: estado });
   }));
 
   /**
@@ -397,18 +587,26 @@ export function setupAdmin(app, { publicUrl, state = {} }) {
     }
 
     const entregue = ['DELIVERY_ACK', 'READ', 'PLAYED'].includes(status);
-    if (entregue) registrarEntrega(r?.waId);
+    const evento = entregue ? 'PROBE_DELIVERED' : status === 'ERROR' ? 'PROBE_ERROR' : null;
+    const detalhe = entregue
+      ? 'sonda com entrega confirmada'
+      : status === 'ERROR' ? 'sonda recusada pelo WhatsApp' : null;
+    const { estado: freio } = evento
+      ? await registrarEventoEReconciliar(evento, detalhe, 'sonda')
+      : await reconciliarFreioPersistido('sonda');
 
     res.json({
       waId: r?.waId || null,
       status,
       entregue,
       rejeitada: status === 'ERROR',
-      freio: verFreio(),
+      freio,
       veredito: entregue
         ? 'Entregue. O canal está de pé e o freio foi liberado.'
         : status === 'ERROR'
-          ? 'REJEITADA pelo WhatsApp. O número continua impedido de enviar — não repareie de novo.'
+          ? freio.bloqueado
+            ? 'REJEITADA pelo WhatsApp. O canal continua bloqueado — não repareie em série.'
+            : 'REJEITADA para este destinatário. Os demais atendimentos seguem ativos.'
           : 'Sem confirmação no tempo de espera. Aceito e não confirmado: trate como não entregue.'
     });
   }));

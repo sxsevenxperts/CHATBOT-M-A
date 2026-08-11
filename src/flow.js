@@ -3,7 +3,7 @@ import { str, num } from './env.js';
 import { sendText, sendPresence } from './evolution.js';
 import {
   getSession, saveSession, saveTriage, logMessage,
-  getSessoesInterrompidas, marcarRetomada
+  getSessoesInterrompidas, marcarRetomada, resumoDestinoEnvio
 } from './database.js';
 import {
   INTENTS, CATEGORIES, SERVICES, NEEDS, LEVELS, PERIODS, DATES,
@@ -14,6 +14,7 @@ import {
   extractDate, extractPeriod, norm
 } from './extract.js';
 import { bloqueado as envioBloqueado, contarNaoEnviada } from './freio.js';
+import { reconciliarFreioPersistido } from './canal.js';
 import { info, warn } from './recorder.js';
 
 /**
@@ -148,14 +149,33 @@ function apelidoVeiculo(v) {
 }
 
 async function reply(phone, text) {
+  const registrarBloqueio = async ({ destino = false, rejeicoesSeguidas = null } = {}) => {
+    await logMessage(phone, 'out', text, null, destino ? 'BLOQUEADO_DESTINO' : 'BLOQUEADO');
+    const n = contarNaoEnviada();
+    if (destino) {
+      warn('freio.destinoNaoEnviou', { phone, rejeicoesSeguidas, naoEnviadas: n });
+    } else {
+      warn('freio.naoEnviou', { phone, naoEnviadas: n });
+    }
+    return { enviado: false, destinoBloqueado: destino };
+  };
+
   // Freio engatado: o WhatsApp está recusando. Enviar de novo só piora o
   // número e o cliente continua sem ver nada. Registra o que deixou de sair
   // (fica visível no dashboard) e devolve o caso para o atendimento humano.
   if (envioBloqueado()) {
-    await logMessage(phone, 'out', text, null, 'BLOQUEADO');
-    const n = contarNaoEnviada();
-    warn('freio.naoEnviou', { phone, naoEnviadas: n });
-    return { enviado: false };
+    return registrarBloqueio();
+  }
+
+  // Um contato que recusou duas mensagens não pode silenciar todos os outros.
+  // Isola somente ele; a sonda entregue para o mesmo número o libera porque
+  // passa a ser o veredito definitivo mais novo desse destinatário.
+  const destino = await resumoDestinoEnvio(phone, {
+    limite: Math.max(1, num('FREIO_DESTINO_REJEICOES', 2)),
+    incluirTestes: process.env.NODE_ENV === 'test'
+  });
+  if (destino.bloqueado) {
+    return registrarBloqueio({ destino: true, rejeicoesSeguidas: destino.rejeicoesSeguidas });
   }
 
   const min = DELAY_MIN(), max = DELAY_MAX();
@@ -164,9 +184,54 @@ async function reply(phone, text) {
     await sendPresence(phone, 'composing');
     await sleep(wait);
   }
+
+  // O ACK que engata o freio pode chegar enquanto esta resposta está no
+  // delay humanizado. Revalida imediatamente antes do efeito externo para
+  // nenhuma resposta que já estava "digitando" escapar em rajada.
+  if (envioBloqueado()) return registrarBloqueio();
+  await reconciliarFreioPersistido('pre-envio');
+  if (envioBloqueado()) return registrarBloqueio();
+  const destinoAgora = await resumoDestinoEnvio(phone, {
+    limite: Math.max(1, num('FREIO_DESTINO_REJEICOES', 2)),
+    incluirTestes: process.env.NODE_ENV === 'test'
+  });
+  if (destinoAgora.bloqueado) {
+    return registrarBloqueio({
+      destino: true,
+      rejeicoesSeguidas: destinoAgora.rejeicoesSeguidas
+    });
+  }
+  if (envioBloqueado()) return registrarBloqueio();
+
   // Guarda o id do WhatsApp: é por ele que o ACK de entrega volta.
   const r = await sendText(phone, text);
-  await logMessage(phone, 'out', text, r?.waId || null, r?.status || null);
+  try {
+    let salvo = null;
+    for (const espera of [0, 120, 500]) {
+      if (espera) await sleep(espera);
+      salvo = await logMessage(phone, 'out', text, r?.waId || null, r?.status || null);
+      if (salvo?.ok) break;
+    }
+    if (!salvo?.ok) {
+      warn('flow.saidaAceitaSemRegistro', {
+        phone,
+        waId: r?.waId || null,
+        acao: 'ACK pode ficar órfão; verifique Supabase e a caixa preta'
+      });
+    }
+    if (salvo?.reconciledAck) {
+      await reconciliarFreioPersistido('ack-orfao');
+    }
+  } catch (e) {
+    // O efeito externo já ocorreu. Repetir a entrada por uma falha apenas no
+    // log duplicaria a resposta ao cliente; mantém o avanço e alarma a perda
+    // de observabilidade para correção operacional.
+    warn('flow.saidaAceitaLogFalhou', {
+      phone,
+      waId: r?.waId || null,
+      erro: e.message
+    });
+  }
   return { enviado: true, waId: r?.waId || null };
 }
 
@@ -290,7 +355,7 @@ function perguntaCurta(step, d) {
  * Conservador de propósito: só depois de queda longa, poucos por vez, com
  * intervalo entre envios e nunca duas vezes para a mesma pessoa.
  */
-export async function retomarConversas({ caiuEm = null, ultimasHoras = null, limite = null }) {
+async function executarRetomada({ caiuEm = null, ultimasHoras = null, limite = null }) {
   const max = limite ?? num('RECOVERY_MAX', 20);
 
   // Dois usos, janelas diferentes:
@@ -319,7 +384,15 @@ export async function retomarConversas({ caiuEm = null, ultimasHoras = null, lim
       `Retomando: ${perguntaCurta(passo, d)}`;
 
     try {
-      await reply(sessao.phone, texto);
+      const envio = await reply(sessao.phone, texto);
+      if (!envio.enviado) {
+        warn('retomada.bloqueada', {
+          de: sessao.phone,
+          escopo: envio.destinoBloqueado ? 'destinatário' : 'canal'
+        });
+        if (!envio.destinoBloqueado) break;
+        continue;
+      }
       await marcarRetomada(sessao.phone);
       telefones.push(sessao.phone);
       info('retomada.enviada', { de: sessao.phone, passo, cliente: d.name || '—' });
@@ -331,6 +404,17 @@ export async function retomarConversas({ caiuEm = null, ultimasHoras = null, lim
 
   info('retomada.concluida', { retomadas: telefones.length, janela: caiuEm ? 'pós-queda' : `${ultimasHoras || 6}h` });
   return { retomadas: telefones.length, telefones };
+}
+
+let filaRetomada = Promise.resolve();
+
+export function retomarConversas(options = {}) {
+  const job = filaRetomada.then(
+    () => executarRetomada(options),
+    () => executarRetomada(options)
+  );
+  filaRetomada = job.catch(() => {});
+  return job;
 }
 
 /* ---------------- Interpretação da resposta ---------------- */
@@ -472,9 +556,12 @@ function interpretar(step, text, d) {
 
 /* ---------------- Handoff ---------------- */
 
-async function encerrar(phone, d) {
-  const triage = await saveTriage(d);
-  await saveSession(phone, { step: 'done', data: d, handed_off: true });
+async function encerrar(phone, d, inboxId = null) {
+  // A triagem é criada uma vez e o id fica na sessão. Se o envio final for
+  // barrado/falhar, a próxima mensagem tenta concluir sem duplicar o lead.
+  const triage = d.triage_id ? { id: d.triage_id } : await saveTriage(d);
+  d.triage_id = triage.id;
+  await saveSession(phone, { step: 'handoff_pending', data: d, handed_off: false });
 
   const aberto = isOpenNow();
   const nome = d.name || '';
@@ -493,7 +580,14 @@ async function encerrar(phone, d) {
     msg += '\n\nEla também vai te passar os valores do serviço.';
   }
 
-  await reply(phone, `${msg}\n\n${ASSINATURA}`);
+  const envio = await reply(phone, `${msg}\n\n${ASSINATURA}`);
+  if (!envio?.enviado) {
+    warn('flow.handoffPendente', { triagem: triage.id, de: phone });
+    return { triage, enviado: false };
+  }
+
+  if (inboxId) d._last_inbox_id = inboxId;
+  await saveSession(phone, { step: 'done', data: d, handed_off: true });
 
   info('flow.handoff', {
     triagem: triage.id, cliente: nome, de: phone,
@@ -502,15 +596,25 @@ async function encerrar(phone, d) {
     quando: [d.date_pref, d.period].filter(Boolean).join(' ') || 'sem preferência',
     noHorario: aberto
   });
-  return triage;
+  return { triage, enviado: true };
 }
 
 /* ---------------- Entrada ---------------- */
 
-export async function handleMessage({ phone, text, pushName }) {
-  await logMessage(phone, 'in', text);
-
+export async function handleMessage({ phone, text, pushName, inboxId = null }) {
   let session = await getSession(phone);
+
+  // Se o envio ocorreu e só a conclusão do inbox falhou, o retry encontra o
+  // marcador salvo junto com a sessão e apenas encerra o inbox. Sem isto, a
+  // mesma mensagem antiga seria interpretada no passo novo e responderia em
+  // duplicidade. A Evolution 2.3.7 não oferece chave de idempotência no
+  // sendText, portanto este marcador é a proteção durável disponível no app.
+  if (inboxId && session?.data?._last_inbox_id === inboxId) {
+    info('flow.inboxJaProcessado', { de: phone, inboxId });
+    return { action: 'duplicate' };
+  }
+
+  await logMessage(phone, 'in', text);
 
   // 24h desde o último contato: bot rearmado, atende como contato novo.
   if (session) {
@@ -523,7 +627,9 @@ export async function handleMessage({ phone, text, pushName }) {
 
   // Já com a atendente: bot em silêncio, só empurra a janela.
   if (session?.handed_off) {
-    await saveSession(phone, {});
+    const dados = { ...(session.data || {}) };
+    if (inboxId) dados._last_inbox_id = inboxId;
+    await saveSession(phone, { data: dados });
     info('flow.silenciado', { de: phone, motivo: 'em atendimento humano' });
     return { action: 'silenced' };
   }
@@ -550,7 +656,12 @@ export async function handleMessage({ phone, text, pushName }) {
       if (JSON.stringify(d) === antes) {
         await saveSession(phone, { step: passoAnterior, data: d });
         info('flow.naoEntendi', { de: phone, passo: passoAnterior, texto: text });
-        await reply(phone, 'Desculpe, não compreendi. 🙂\n\n' + pergunta(passoAnterior, d));
+        const resposta = await reply(phone, 'Desculpe, não compreendi. 🙂\n\n' + pergunta(passoAnterior, d));
+        if (!resposta?.enviado) {
+          return { action: 'send_blocked', step: passoAnterior };
+        }
+        if (inboxId) d._last_inbox_id = inboxId;
+        await saveSession(phone, { step: passoAnterior, data: d, handed_off: false });
         return { action: 'retry' };
       }
     }
@@ -571,12 +682,9 @@ export async function handleMessage({ phone, text, pushName }) {
   const passo = proximoPasso(d);
 
   if (passo === 'done') {
-    await encerrar(phone, d);
-    return { action: 'handoff' };
+    const fim = await encerrar(phone, d, inboxId);
+    return { action: fim.enviado ? 'handoff' : 'handoff_pending' };
   }
-
-  await saveSession(phone, { step: passo, data: d, handed_off: false });
-  info('flow.passo', { de: phone, passo, cliente: d.name || '—' });
 
   const partes = [];
 
@@ -592,7 +700,17 @@ export async function handleMessage({ phone, text, pushName }) {
   if (extra) partes.push(extra);
   partes.push(pergunta(passo, d));
 
-  await reply(phone, partes.join('\n\n'));
+  const resposta = await reply(phone, partes.join('\n\n'));
+  if (!resposta?.enviado) {
+    // Não avança para uma pergunta que o cliente nunca recebeu. A próxima
+    // mensagem retoma do último passo confirmado, em vez de desalinhá-lo.
+    warn('flow.passoNaoAvancou', { de: phone, passoPretendido: passo });
+    return { action: 'send_blocked', step: passoAnterior || 'ask_name' };
+  }
+
+  if (inboxId) d._last_inbox_id = inboxId;
+  await saveSession(phone, { step: passo, data: d, handed_off: false });
+  info('flow.passo', { de: phone, passo, cliente: d.name || '—' });
 
   return { action: primeiroContato ? 'started' : 'ok', step: passo };
 }

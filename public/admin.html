@@ -12,7 +12,7 @@
      #80152F profundo, #F29CA7 como tom claro legível no escuro. */
   :root{
     --bg:#0A0809; --surface:#141011; --surface-2:#1B1617; --line:#2C2325;
-    --text:#F4F1F0; --muted:#9A8F91; --faint:#665C5E;
+    --text:#F4F1F0; --muted:#A99EA0; --faint:#8F8385;
 
     --brand:#C61C29; --brand-bright:#E0222F; --brand-deep:#80152F;
     --brand-dark:#42030C; --brand-tint:#F29CA7;
@@ -28,6 +28,7 @@
     --r:14px;
   }
   *{margin:0;padding:0;box-sizing:border-box}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   html,body{height:100%}
   body{
     background:
@@ -75,6 +76,10 @@
   }
   .btn:hover{border-color:var(--brand-line);background:#221B1C}
   .btn:active{transform:translateY(1px)}
+  .btn:focus-visible,.chip:focus-visible,tbody tr:focus-visible,input:focus-visible,select:focus-visible{
+    outline:2px solid var(--brand-tint);outline-offset:2px
+  }
+  .btn:disabled,.chip:disabled{opacity:.55;cursor:wait;transform:none}
   .btn-primary{
     background:linear-gradient(180deg,var(--brand-bright),var(--brand));
     border-color:transparent;color:#fff;font-weight:600;
@@ -353,6 +358,7 @@
 
   @media(max-width:900px){ .two{grid-template-columns:1fr} .stats{grid-template-columns:repeat(2,1fr)} }
   @media(max-width:560px){ #app{padding:18px 14px 60px} .panel-body{padding:15px} }
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
@@ -365,10 +371,11 @@
     <h1 class="serif">Central de Atendimento</h1>
     <span class="label">Triagem automática · WhatsApp</span>
     <form id="loginForm" autocomplete="off">
+      <label class="sr-only" for="pwd">Senha de acesso</label>
       <input type="password" id="pwd" placeholder="Senha de acesso" autocomplete="current-password">
       <button class="btn btn-primary btn-block" type="submit">Entrar</button>
     </form>
-    <div class="err" id="loginErr"></div>
+    <div class="err" id="loginErr" role="alert" aria-live="polite"></div>
     <div class="rodape">
       <div class="risco"></div>
       Powered by <span class="sx">SX SEVEN XPERTS</span><br>
@@ -394,6 +401,7 @@
       <span class="pill" id="pillWa"><i class="dot"></i> WhatsApp</span>
       <span class="pill" id="pillWh"><i class="dot"></i> Webhook</span>
       <span class="pill" id="pillEnt"><i class="dot"></i> Entrega</span>
+      <span class="pill" id="pillBot"><i class="dot"></i> Bot</span>
       <button class="btn btn-sm bell" id="bell" title="Marcar notificações como vistas">
         Novas <span class="count" id="bellCount">0</span>
       </button>
@@ -401,7 +409,7 @@
     </div>
   </header>
 
-  <div id="banner">
+  <div id="banner" role="alert" aria-live="assertive">
     <span class="label">Atenção</span>
     <p id="bannerMsg" style="font-size:13.5px;margin-top:4px"></p>
   </div>
@@ -429,10 +437,10 @@
         <button class="chip on" data-dias="">Tudo</button>
       </div>
       <div class="datas">
-        <span class="label">De</span>
+        <label class="label" for="dtDe">De</label>
         <input type="date" id="dtDe">
         <span class="sep">→</span>
-        <span class="label">Até</span>
+        <label class="label" for="dtAte">Até</label>
         <input type="date" id="dtAte">
         <button class="chip" id="btnLimparDatas">Limpar</button>
       </div>
@@ -484,7 +492,8 @@
     <div class="panel-head">
       <h2 class="serif">Envio de mensagens</h2>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">
-        <input id="sondaNum" placeholder="número com DDD" inputmode="numeric"
+        <label class="sr-only" for="sondaNum">Número para testar o envio</label>
+        <input id="sondaNum" placeholder="número com DDD" inputmode="numeric" aria-label="Número para testar o envio"
                style="padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:170px">
         <button class="btn btn-sm btn-primary" id="btnSonda" title="Envia UMA mensagem e espera a confirmação real de entrega">Testar envio</button>
         <button class="btn btn-sm" id="btnLiberar" title="Religa o envio automático — só depois de um teste entregue">Liberar envio</button>
@@ -567,7 +576,7 @@
 
 <!-- ============ Contexto para a atendente ============ -->
 <div id="drawer">
-  <div class="ctx">
+  <div class="ctx" role="dialog" aria-modal="true" aria-labelledby="ctxName" tabindex="-1">
     <div class="ctx-head">
       <div>
         <span class="label" id="ctxKind">Novo cliente</span>
@@ -584,16 +593,72 @@
   </div>
 </div>
 
-<div id="toasts"></div>
+<div id="toasts" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
 const api = (p, o = {}) => fetch('/admin/api' + p, {
   ...o,
-  headers: { 'Content-Type': 'application/json',
-             Authorization: 'Bearer ' + localStorage.getItem('maToken'), ...(o.headers || {}) }
+  credentials: 'same-origin',
+  headers: { 'Content-Type': 'application/json', ...(o.headers || {}) }
 });
+
+async function apiJson(p, o = {}) {
+  const response = await api(p, o);
+  let data = null;
+  try { data = await response.json(); } catch {}
+  if (!response.ok) {
+    const erro = new Error(data?.error || `Erro HTTP ${response.status}`);
+    erro.status = response.status;
+    if (response.status === 401) mostrarLogin('Sua sessão expirou. Entre novamente.');
+    throw erro;
+  }
+  return data;
+}
+
+const ACOES_CRITICAS = [
+  'btnConectar', 'btnDesconectar', 'btnReiniciar', 'btnRetomar',
+  'btnSync', 'btnCriarOficial', 'btnSonda', 'btnLiberar'
+];
+
+async function executarAcao(botao, texto, tarefa) {
+  if (botao?.disabled) return null;
+  const rotulos = new Map();
+  for (const id of ACOES_CRITICAS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    rotulos.set(el, el.textContent);
+    el.disabled = true;
+  }
+  if (botao && texto) botao.textContent = texto;
+  try {
+    return await tarefa();
+  } catch (e) {
+    if (e.status !== 401) toast('Falha', String(e.message || e));
+    return null;
+  } finally {
+    for (const [el, rotulo] of rotulos) {
+      el.disabled = false;
+      el.textContent = rotulo;
+    }
+  }
+}
+
+/** Aceita somente PNG base64; nunca injeta URL ou SVG vindos da Evolution. */
+function qrSeguro(valor) {
+  let bruto = String(valor || '').trim();
+  if (bruto.startsWith('data:image/png;base64,')) bruto = bruto.slice(22);
+  if (!bruto || bruto.length > 2_000_000 || !/^[A-Za-z0-9+/=\r\n]+$/.test(bruto)) return null;
+  return 'data:image/png;base64,' + bruto.replace(/\s/g, '');
+}
+
+function atualizarPill(id, estado, texto) {
+  const el = $(id);
+  const dot = el.querySelector('.dot');
+  dot.className = 'dot ' + (estado === true ? 'on' : estado === false ? 'off' : 'warn');
+  el.lastChild.textContent = ' ' + texto;
+}
 
 const BUILD_CARREGADO = '{{BUILD}}';
 let knownUnseen = new Set();
@@ -603,6 +668,8 @@ let atual = [];
 let logNivel = 'all';
 let estabDias = 7;
 let filtro = { de: null, ate: null, testes: false };
+let refreshPromise = null;
+let appAtivo = false;
 
 /** Monta a query compartilhada por triagens, stats e mensagens. */
 function qsFiltro(extra = '') {
@@ -660,14 +727,15 @@ $('#btnVerTestes').onclick = () => { filtro.testes = !filtro.testes; refresh(); 
 
 $('#btnLimparTestes').onclick = async () => {
   if (!confirm('Apagar TODAS as conversas marcadas como teste?\n\nAtendimentos reais não são afetados.')) return;
-  const r = await api('/testes', { method: 'DELETE' });
-  const j = await r.json();
-  if (r.ok) {
+  try {
+    const j = await apiJson('/testes', { method: 'DELETE' });
     const t = j.apagados || {};
     toast('Testes apagados', `${t.triages || 0} triagens · ${t.messages || 0} mensagens · ${t.bot_sessions || 0} sessões`);
     filtro.testes = false;
-  } else toast('Falha', j.error || 'não foi possível apagar');
-  refresh();
+    await refresh();
+  } catch (e) {
+    if (e.status !== 401) toast('Falha', e.message);
+  }
 };
 
 /* ---------------- Login ---------------- */
@@ -686,29 +754,48 @@ $('#loginForm').addEventListener('submit', async e => {
         : `Erro ${r.status}${detalhe ? ' — ' + detalhe : ''}`;
       return;
     }
-    const { token } = await r.json();
-    localStorage.setItem('maToken', token);
+    await r.json();
+    $('#pwd').value = '';
     unlockAudio();
     if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
     boot();
   } catch (e) {
-    $('#loginErr').innerHTML =
-      `Não foi possível falar com o servidor.<br><span style="color:var(--faint);font-size:11.5px">` +
-      `${String(e.message || e)} · ${location.origin}<br>Recarregue com Ctrl+Shift+R (ou Cmd+Shift+R).</span>`;
+    $('#loginErr').textContent =
+      `Não foi possível falar com o servidor: ${String(e.message || e)}. Recarregue a página.`;
   }
 });
 
-$('#btnLogout').onclick = () => { localStorage.removeItem('maToken'); clearInterval(timer); location.reload(); };
+$('#btnLogout').onclick = async () => {
+  try {
+    await apiJson('/logout', { method:'POST' });
+    mostrarLogin('Sessão encerrada.');
+  } catch (e) {
+    if (e.status !== 401) toast('Falha ao sair', e.message);
+  }
+};
 $('#btnReload').onclick = () => refresh();
 
 function boot() {
+  if (appAtivo) return;
+  appAtivo = true;
   $('#login').style.display = 'none';
   $('#app').style.display = 'block';
   refresh();
   clearInterval(timer);
-  timer = setInterval(refresh, 6000);
+  timer = setInterval(() => { if (!document.hidden) refresh(); }, 15000);
 }
-if (localStorage.getItem('maToken')) boot();
+
+function mostrarLogin(mensagem = '') {
+  appAtivo = false;
+  clearInterval(timer);
+  $('#app').style.display = 'none';
+  $('#login').style.display = 'grid';
+  $('#loginErr').textContent = mensagem;
+  $('#pwd').focus();
+}
+
+// Cookie HttpOnly: restaura a sessão sem expor credencial ao JavaScript.
+api('/status').then(r => r.ok ? boot() : mostrarLogin()).catch(() => mostrarLogin());
 
 /* Aba velha depois de um deploy: avisa em vez de deixar brigar com erro fantasma. */
 setInterval(async () => {
@@ -740,26 +827,39 @@ function conexaoOk(ok, err) {
 }
 
 async function refresh() {
-  try {
-    const [tr, st, ms, sr, lg] = await Promise.all([
-      api(qsFiltro('/triages?limit=120')),
-      api(qsFiltro('/stats')),
-      api(qsFiltro('/messages?limit=100')),
-      api('/status'),
-      api('/log?limit=120&level=' + logNivel)
-    ]);
-    api('/conexao/historico?dias=' + estabDias).then(r => r.json()).then(renderEstabilidade).catch(() => {});
-    if (tr.status === 401) { localStorage.removeItem('maToken'); location.reload(); return; }
-    const triages = await tr.json();
-    atual = triages;
-    renderStats(await st.json());
-    renderTriages(triages);
-    renderFeed(await ms.json());
-    renderStatus(await sr.json());
-    renderLog(await lg.json());
-    checkNew(triages);
-    conexaoOk(true);
-  } catch (e) { console.error('refresh', e); conexaoOk(false, e); }
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      // Estado operacional vem primeiro: uma falha secundária na lista nunca
+      // pode esconder que o bot está parado ou o webhook está em 503.
+      const status = await apiJson('/status');
+      renderStatus(status);
+      conexaoOk(true);
+
+      const resultados = await Promise.allSettled([
+        apiJson(qsFiltro('/triages?limit=120')),
+        apiJson(qsFiltro('/stats')),
+        apiJson(qsFiltro('/messages?limit=100')),
+        apiJson('/log?limit=120&level=' + logNivel),
+        apiJson('/conexao/historico?dias=' + estabDias)
+      ]);
+      const [triages, stats, messages, log, estabilidade] = resultados;
+      if (triages.status === 'fulfilled') {
+        atual = triages.value;
+        renderTriages(triages.value);
+        checkNew(triages.value);
+      }
+      if (stats.status === 'fulfilled') renderStats(stats.value);
+      if (messages.status === 'fulfilled') renderFeed(messages.value);
+      if (log.status === 'fulfilled') renderLog(log.value);
+      if (estabilidade.status === 'fulfilled') renderEstabilidade(estabilidade.value);
+      resultados.filter(r => r.status === 'rejected').forEach(r => console.error('painel parcial', r.reason));
+    } catch (e) {
+      console.error('refresh', e);
+      if (e.status !== 401) conexaoOk(false, e);
+    }
+  })().finally(() => { refreshPromise = null; });
+  return refreshPromise;
 }
 
 /* ---------------- Notificação ---------------- */
@@ -794,8 +894,8 @@ function checkNew(triages) {
 $('#bell').onclick = async () => {
   const ids = [...knownUnseen];
   if (!ids.length) return;
-  await api('/triages/seen', { method: 'POST', body: JSON.stringify({ ids }) });
-  refresh();
+  await apiJson('/triages/seen', { method: 'POST', body: JSON.stringify({ ids }) });
+  await refresh();
 };
 
 let audioCtx = null;
@@ -878,6 +978,15 @@ function renderTriages(list) {
     const tr = document.createElement('tr');
     if (!t.seen && t.status === 'pending') tr.className = 'fresh';
     tr.onclick = ev => { if (!ev.target.closest('select,button,a')) abrirContexto(t); };
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'button');
+    tr.setAttribute('aria-label', `Abrir contexto de ${t.name || 'cliente'}`);
+    tr.onkeydown = ev => {
+      if ((ev.key === 'Enter' || ev.key === ' ') && !ev.target.closest('select,button,a')) {
+        ev.preventDefault();
+        abrirContexto(t);
+      }
+    };
 
     const c1 = document.createElement('td');
     const w = document.createElement('div'); w.className = 'who'; w.textContent = t.name || 'Cliente';
@@ -911,8 +1020,13 @@ function renderTriages(list) {
       sel.appendChild(o);
     }
     sel.onchange = async () => {
-      await api('/triages/' + t.id, { method:'PUT', body: JSON.stringify({ status: sel.value }) });
-      refresh();
+      try {
+        await apiJson('/triages/' + t.id, { method:'PUT', body: JSON.stringify({ status: sel.value }) });
+        await refresh();
+      } catch (e) {
+        toast('Falha ao alterar situação', e.message);
+        await refresh();
+      }
     };
     c7.appendChild(sel);
 
@@ -941,7 +1055,8 @@ function renderFeed(list) {
     const lb = document.createElement('span'); lb.className = 'label';
     const ENT = { PENDING:'⏳ enviando', SERVER_ACK:'✓ no servidor', DELIVERY_ACK:'✓✓ entregue',
                   READ:'✓✓ lida', PLAYED:'✓✓ ouvida', ERROR:'✖ REJEITADA pelo WhatsApp',
-                  BLOQUEADO:'⛔ NÃO ENVIADA — freio de segurança' };
+                  BLOQUEADO:'⛔ NÃO ENVIADA — canal bloqueado',
+                  BLOQUEADO_DESTINO:'⚠ NÃO ENVIADA — contato isolado' };
     const st = m.direction === 'out'
       ? ' · ' + (ENT[m.status] || (m.status ? m.status : '⏳ sem confirmação'))
       : '';
@@ -1037,6 +1152,9 @@ $('#logFiltros').addEventListener('click', e => {
 
 function renderStatus(s) {
   const wa = s.whatsapp || {}, wh = s.webhook || {};
+  const ent = s.entrega || {}, freio = s.freio || {};
+  const destinos = Array.isArray(s.destinosBloqueados) ? s.destinosBloqueados : [];
+  const numeroAparelho = wa.ownerJid ? fone(wa.ownerJid.split('@')[0]) : 'número conectado';
 
   // WhatsApp fora do ar é a pior falha possível: o negócio para de receber
   // cliente. Tem prioridade sobre qualquer outro aviso.
@@ -1056,18 +1174,19 @@ function renderStatus(s) {
       '<div class="qr-banner" id="qrBanner"><div class="carregando" style="color:var(--faint);font-size:13px">buscando o QR Code…</div></div>';
 
     // O QR vem para dentro do alarme: recuperar é escanear, não procurar.
-    api('/qr').then(r => r.json()).then(q => {
+    apiJson('/qr').then(q => {
       const slot = document.getElementById('qrBanner');
       if (!slot) return;
+      const src = qrSeguro(q.base64 || q.qr);
       const passos =
         '<ol>' +
-        '<li>No celular <strong>(88) 98155-3041</strong>, abra o WhatsApp</li>' +
+        `<li>No celular <strong>${esc(numeroAparelho)}</strong>, abra o WhatsApp</li>` +
         '<li>Toque em <strong>⋮ → Aparelhos conectados</strong></li>' +
         '<li>Toque em <strong>Conectar um aparelho</strong></li>' +
         '<li>Aponte para este código</li>' +
         '</ol>';
-      slot.innerHTML = q.base64
-        ? `<img src="${q.base64.startsWith('data:') ? q.base64 : 'data:image/png;base64,' + q.base64}" alt="QR Code">${passos}`
+      slot.innerHTML = src
+        ? `<img src="${src}" alt="QR Code">${passos}`
         : '<div style="font-size:13px;color:var(--muted)">O sistema está tentando reconectar sozinho. ' +
           'Se não voltar em alguns minutos, reinicie a instância na Evolution.</div>';
     }).catch(() => {});
@@ -1079,59 +1198,64 @@ function renderStatus(s) {
     delete banner.dataset.reason;
     banner.style.display = 'none';
   }
-  const pw = $('#pillWa');
-  pw.querySelector('.dot').className = 'dot ' + (wa.connected ? 'on' : 'off');
-  pw.lastChild.textContent = wa.connected ? ` WhatsApp${wa.profileName ? ' · ' + wa.profileName : ''}` : ' WhatsApp offline';
-
-  const ph = $('#pillWh');
-  ph.querySelector('.dot').className = 'dot ' + (wh.correct ? 'on' : 'warn');
-  ph.lastChild.textContent = wh.correct ? ' Webhook ok' : ' Webhook a ajustar';
+  atualizarPill('#pillWa', !!wa.connected,
+    wa.connected ? `WhatsApp${wa.profileName ? ' · ' + wa.profileName : ''}` : 'WhatsApp offline');
+  atualizarPill('#pillWh', !!wh.correct, wh.correct ? 'Webhook ok' : 'Webhook a ajustar');
+  atualizarPill('#pillBot', s.operational === true,
+    s.operational === true ? 'Bot operacional' : s.ready === true ? 'Bot pausado' : 'Bot indisponível');
 
   // Entrega: aceite não é entrega. Esta pílula mostra a diferença.
-  const ent = s.entrega || {};
-  const pe = $('#pillEnt');
-  pe.querySelector('.dot').className = 'dot ' +
-    (ent.saudavel === true ? 'on' : ent.saudavel === false ? 'off' : 'warn');
-  pe.lastChild.textContent = ent.saudavel === true
-    ? ` Entrega ok (${ent.entregues}/${ent.enviadas})`
+  atualizarPill('#pillEnt', ent.saudavel,
+    ent.saudavel === true
+    ? `Entrega ok (${ent.entregues}/${ent.enviadas})`
     : ent.saudavel === false
-      ? (ent.rejeitadas ? ` ${ent.rejeitadas} REJEITADAS` : ' Entrega FALHANDO')
-      : ' Entrega sem dados';
+      ? (ent.rejeitadas ? `${ent.rejeitadas} rejeitada(s)` : 'Entrega falhando')
+      : 'Entrega sem dados');
 
-  // Freio de envio: o bot parou de responder de propósito.
-  pintarFreio(s.freio || {});
-
-  // Alarme: mensagens aceitas e não entregues é falha silenciosa — a pior.
-  if (ent.saudavel === false && banner.dataset.reason !== 'whatsapp') {
-    banner.dataset.reason = 'entrega';
-    banner.classList.add('grave');
-    banner.style.display = 'block';
-    $('#bannerMsg').innerHTML =
-      '<strong>As mensagens do bot NÃO estão sendo entregues.</strong><br>' +
-      (ent.rejeitadas
-        ? `<strong>${ent.rejeitadas}</strong> mensagem(ns) foram <strong>REJEITADAS</strong> pelo WhatsApp (status ERROR) ` +
-          `nos últimos ${ent.minutos} min. Não é demora: é recusa.<br>` +
-          'Antes de repareaar, verifique no aparelho se o número tem aviso de restrição — ' +
-          'repareamento repetido piora esse caso.'
-        : `${ent.semConfirmacao} mensagem(ns) dos últimos ${ent.minutos} min saíram sem confirmação. ` +
-          'A Evolution aceita, o WhatsApp não entrega.<br>' +
-          'Remédio: <strong>Desconectar e pareear</strong> no painel Conexão.');
-  } else if (banner.dataset.reason === 'entrega' && ent.saudavel !== false) {
-    delete banner.dataset.reason;
-    banner.classList.remove('grave');
-    banner.style.display = 'none';
-  }
+  pintarFreio(freio, destinos, s.destinosBloqueadosErro);
 
   const boot = s.boot || {};
   const faltando = boot.env?.missing || [];
   const problemas = [];
   if (faltando.length) problemas.push(`Variáveis faltando no servidor: ${faltando.join(', ')}.`);
   if (boot.db && boot.db.ok === false) problemas.push(`Banco inacessível: ${boot.db.error}`);
+  if (boot.canal && boot.canal.ok === false) problemas.push(`Estado do canal indisponível: ${boot.canal.error}`);
+  if (!wh.correct) problemas.push(`Webhook incorreto ou sem autenticação${wh.error ? ': ' + wh.error : '.'}`);
   if (s.publicUrlSource === 'request') problemas.push('PUBLIC_URL não definida — derivada do endereço acessado.');
 
-  if (!banner.dataset.reason) {
-    if (problemas.length) { banner.style.display = 'block'; $('#bannerMsg').textContent = problemas.join('  •  '); }
-    else banner.style.display = 'none';
+  // Stale/sem conexão e WhatsApp offline são definidos fora deste bloco e têm
+  // prioridade. Os demais avisos derivam do contrato canônico do backend.
+  if (!['stale', 'conn', 'whatsapp'].includes(banner.dataset.reason)) {
+    banner.classList.remove('grave');
+    if (s.ready !== true) {
+      banner.dataset.reason = 'sistema';
+      banner.classList.add('grave');
+      banner.style.display = 'block';
+      $('#bannerMsg').textContent =
+        'Bot indisponível: ' + (problemas.join(' • ') || 'uma dependência ainda não está pronta.');
+    } else if (freio.bloqueado) {
+      banner.dataset.reason = 'freio';
+      banner.classList.add('grave');
+      banner.style.display = 'block';
+      $('#bannerMsg').textContent =
+        `Envio automático bloqueado: ${freio.motivo || 'falha global de entrega'}. ` +
+        'Atenda manualmente e use uma sonda autorizada antes de liberar.';
+    } else if (destinos.length) {
+      banner.dataset.reason = 'destinos';
+      banner.style.display = 'block';
+      $('#bannerMsg').textContent =
+        `${destinos.length} contato(s) isolado(s) por recusas do WhatsApp. ` +
+        'Os demais atendimentos continuam ativos; abra a seção Envio de mensagens para os números afetados.';
+    } else if (ent.saudavel === false) {
+      banner.dataset.reason = 'entrega';
+      banner.style.display = 'block';
+      $('#bannerMsg').textContent = ent.rejeitadas
+        ? `${ent.rejeitadas} recusa(s) recente(s) do WhatsApp. Uma recusa isolada não prova pane global; acompanhe o destinatário e os próximos ACKs.`
+        : `${ent.semConfirmacao || 0} mensagem(ns) saíram sem confirmação. PENDING/SERVER_ACK não provam entrega.`;
+    } else {
+      delete banner.dataset.reason;
+      banner.style.display = 'none';
+    }
   }
 
   const integ = (wa.integration || '').includes('BUSINESS')
@@ -1142,7 +1266,9 @@ function renderStatus(s) {
     ['Número', wa.ownerJid ? fone(wa.ownerJid.split('@')[0]) : '—'],
     ['Situação', wa.connected ? 'Conectado' : (wa.error || wa.status || 'Desconectado')],
     ['Webhook', wh.url || '—'],
-    ['Eventos', (wh.events || []).join(', ') || '—']
+    ['Eventos', (wh.events || []).join(', ') || '—'],
+    ['Canal canônico', boot.canal?.ok ? 'Restaurado' : (boot.canal?.error || 'Indisponível')],
+    ['Bot', s.operational ? 'Operacional' : s.ready ? 'Pausado pelo freio' : 'Indisponível']
   ];
   const box = $('#conn');
   box.innerHTML = rows.map(([k, v]) => `<div class="kv"><b>${k}</b><span>${esc(v)}</span></div>`).join('');
@@ -1151,11 +1277,12 @@ function renderStatus(s) {
     const d = document.createElement('div'); d.className = 'qr';
     d.innerHTML = '<span class="label">Escaneie para conectar</span><div id="qrSlot" style="margin-top:10px"></div>';
     box.appendChild(d);
-    api('/qr').then(r => r.json()).then(q => {
+    apiJson('/qr').then(q => {
       const slot = document.getElementById('qrSlot');
       if (!slot) return;
-      slot.innerHTML = q.base64
-        ? `<img src="${q.base64.startsWith('data:') ? q.base64 : 'data:image/png;base64,' + q.base64}" alt="QR Code">`
+      const src = qrSeguro(q.base64 || q.qr);
+      slot.innerHTML = src
+        ? `<img src="${src}" alt="QR Code">`
         : '<span class="soft" style="font-size:12.5px">QR indisponível — reinicie a instância na Evolution.</span>';
     }).catch(() => {});
   }
@@ -1165,18 +1292,18 @@ function renderStatus(s) {
 function mostrarQr(q, area) {
   const passos =
     '<ol style="margin:0;padding-left:20px;font-size:13px;color:var(--muted);line-height:1.9">' +
-    '<li>No celular <strong>(88) 98155-3041</strong>, abra o WhatsApp</li>' +
+    '<li>No celular deste atendimento, abra o <strong>WhatsApp</strong></li>' +
     '<li>Toque em <strong>⋮ → Aparelhos conectados</strong></li>' +
     '<li>Toque em <strong>Conectar um aparelho</strong></li>' +
     '<li>Aponte a câmera para este código</li>' +
     '</ol>';
 
-  if (q.qr || q.base64) {
-    const src = q.qr || q.base64;
+  const src = qrSeguro(q.qr || q.base64);
+  if (src) {
     area.innerHTML =
       '<span class="label">Escaneie para conectar</span>' +
       '<div class="qr-banner" style="margin-top:12px">' +
-      `<img src="${src.startsWith('data:') ? src : 'data:image/png;base64,' + src}" alt="QR Code">` +
+      `<img src="${src}" alt="QR Code">` +
       passos + '</div>' +
       (q.pairingCode ? `<div style="margin-top:10px;font-size:13px">Ou use o código de pareamento: <strong>${esc(q.pairingCode)}</strong></div>` : '');
   } else {
@@ -1192,15 +1319,14 @@ $('#btnConectar').onclick = async () => {
   const area = $('#conectarArea');
   area.style.display = 'block';
   area.innerHTML = '<span class="label">Conexão</span><p style="font-size:13px;color:var(--faint);margin-top:6px">gerando…</p>';
-  try {
-    const r = await api('/whatsapp/conectar', { method: 'POST' });
-    const j = await r.json();
-    if (!r.ok) { area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(j.error || 'falhou')}</p>`; return; }
+  const j = await executarAcao($('#btnConectar'), 'Conectando…', async () => {
+    const resultado = await apiJson('/whatsapp/conectar', { method: 'POST' });
+    return resultado;
+  });
+  if (j) {
     mostrarQr(j, area);
-    refresh();
-  } catch (e) {
-    area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(String(e.message || e))}</p>`;
-  }
+    await refresh();
+  } else area.innerHTML = '<p style="color:var(--brand-tint);font-size:13px">Falha ao gerar conexão.</p>';
 };
 
 $('#btnDesconectar').onclick = async () => {
@@ -1212,25 +1338,26 @@ $('#btnDesconectar').onclick = async () => {
   area.style.display = 'block';
   area.innerHTML = '<span class="label">Conexão</span><p style="font-size:13px;color:var(--faint);margin-top:6px">' +
                    'encerrando a sessão e gerando o QR… isto leva alguns segundos</p>';
-  try {
-    const r = await api('/whatsapp/desconectar', { method: 'POST' });
-    const j = await r.json();
-    if (!r.ok) { area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(j.error || 'falhou')}</p>`; return; }
+  const j = await executarAcao($('#btnDesconectar'), 'Desconectando…', () =>
+    apiJson('/whatsapp/desconectar', { method: 'POST' })
+  );
+  if (j) {
     mostrarQr(j, area);
     if (!j.qr) area.innerHTML += '<p style="font-size:13px;color:var(--muted);margin-top:10px">' +
       'O QR ainda não veio. Clique em <strong>Conectar / Gerar QR</strong> em alguns segundos.</p>';
-    refresh();
-  } catch (e) {
-    area.innerHTML = `<p style="color:var(--brand-tint);font-size:13px">${esc(String(e.message || e))}</p>`;
-  }
+    await refresh();
+  } else area.innerHTML = '<p style="color:var(--brand-tint);font-size:13px">Falha ao desconectar.</p>';
 };
 
 $('#btnReiniciar').onclick = async () => {
   if (!confirm('Reiniciar a instância do WhatsApp?\n\nA conexão cai por alguns segundos. Use quando estiver travada.')) return;
-  const r = await api('/whatsapp/reiniciar', { method: 'POST' });
-  const j = await r.json();
-  toast(r.ok ? 'Instância reiniciada' : 'Falha', r.ok ? 'Aguarde alguns segundos e verifique o status.' : (j.error || 'não foi possível'));
-  setTimeout(refresh, 4000);
+  const j = await executarAcao($('#btnReiniciar'), 'Reiniciando…', () =>
+    apiJson('/whatsapp/reiniciar', { method: 'POST' })
+  );
+  if (j) {
+    toast('Instância reiniciada', 'Aguarde alguns segundos e verifique o status.');
+    setTimeout(refresh, 4000);
+  }
 };
 
 $('#btnAbrirOficial').onclick = () => {
@@ -1254,61 +1381,75 @@ $('#btnCriarOficial').onclick = async () => {
               'EVOLUTION_INSTANCE nas variáveis do EasyPanel.')) return;
 
   out.innerHTML = '<span style="color:var(--faint)">criando…</span>';
-  try {
-    const r = await api('/whatsapp/oficial', { method: 'POST', body: JSON.stringify(corpo) });
-    const j = await r.json();
-    if (!r.ok) { out.innerHTML = `<span style="color:var(--brand-tint)">${esc(j.error || 'falhou')}</span>`; return; }
-    $('#ofToken').value = '';        // não deixa o token na tela
+  const j = await executarAcao($('#btnCriarOficial'), 'Criando…', () =>
+    apiJson('/whatsapp/oficial', { method: 'POST', body: JSON.stringify(corpo) })
+  );
+  $('#ofToken').value = '';
+  if (j) {
     out.innerHTML =
       `<strong style="color:var(--green)">Conexão "${esc(j.instancia)}" criada.</strong><br>` +
       `<span style="color:var(--muted)">${esc(j.proximoPasso)}</span>`;
     toast('Conexão oficial criada', j.proximoPasso);
-  } catch (e) {
-    out.innerHTML = `<span style="color:var(--brand-tint)">${esc(String(e.message || e))}</span>`;
-  }
+  } else out.innerHTML = '<span style="color:var(--brand-tint)">Falha ao criar conexão.</span>';
 };
 
 $('#btnRetomar').onclick = async () => {
   if (!confirm('Retomar as conversas interrompidas das últimas 6 horas?\n\n' +
               'Envia uma desculpa e repete a pergunta pendente para quem ficou sem resposta.\n' +
               'Quem já foi atendido pela equipe não é incomodado.')) return;
-  const r = await api('/retomar', { method: 'POST', body: JSON.stringify({ horas: 6 }) });
-  const j = await r.json();
-  toast(r.ok ? 'Retomada' : 'Falha',
-        r.ok ? (j.retomadas ? `${j.retomadas} conversa(s) retomada(s).` : 'Nenhuma conversa pendente.')
-             : (j.error || 'não foi possível'));
-  refresh();
+  const j = await executarAcao($('#btnRetomar'), 'Retomando…', () =>
+    apiJson('/retomar', { method: 'POST', body: JSON.stringify({ horas: 6 }) })
+  );
+  if (j) {
+    toast('Retomada', j.retomadas ? `${j.retomadas} conversa(s) retomada(s).` : 'Nenhuma conversa pendente.');
+    await refresh();
+  }
 };
 
 $('#btnSync').onclick = async () => {
-  const r = await api('/webhook/sync', { method:'POST' });
-  const j = await r.json();
-  toast(r.ok ? 'Webhook sincronizado' : 'Falha', r.ok ? j.url : (j.error || 'Não foi possível sincronizar'));
-  refresh();
+  const j = await executarAcao($('#btnSync'), 'Sincronizando…', () =>
+    apiJson('/webhook/sync', { method:'POST' })
+  );
+  if (j) {
+    toast('Webhook sincronizado', j.url);
+    await refresh();
+  }
 };
 
 /* ---------------- Freio de envio ---------------- */
 
-function pintarFreio(f) {
+function pintarFreio(f, destinos = [], erroDestinos = null) {
   const el = $('#freio');
   if (!el) return;
   const on = !!f.bloqueado;
+  const parcial = !on && destinos.length > 0;
+  const lista = destinos.map(d => {
+    const phone = String(d.phone || '').replace(/\D/g, '');
+    const data = d.ultimaRejeicao ? parseUTC(d.ultimaRejeicao).toLocaleString('pt-BR') : '—';
+    return `<li><a href="https://wa.me/${phone}" target="_blank" rel="noopener">${esc(fone(d.phone))}</a>` +
+      ` — ${Number(d.rejeicoesSeguidas) || 0} recusa(s), última em ${esc(data)}</li>`;
+  }).join('');
   el.innerHTML =
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
-      `<span class="pill"><i class="dot ${on ? 'off' : 'on'}"></i> ` +
-      (on ? 'ENVIO BLOQUEADO' : 'Envio liberado') + '</span>' +
+      `<span class="pill"><i class="dot ${on ? 'off' : parcial ? 'warn' : 'on'}"></i> ` +
+      (on ? 'CANAL BLOQUEADO' : parcial ? 'CANAL ATIVO · CONTATOS ISOLADOS' : 'Canal liberado') + '</span>' +
       (f.rejeicoesSeguidas ? `<span class="label">${f.rejeicoesSeguidas} recusa(s) seguidas de ${f.limite}</span>` : '') +
       (f.naoEnviadas ? `<span class="label">${f.naoEnviadas} resposta(s) não enviada(s)</span>` : '') +
     '</div>' +
     (on
       ? '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
-        `<strong>Motivo:</strong> ${(f.motivo || 'recusa do WhatsApp')}<br>` +
+        `<strong>Motivo:</strong> ${esc(f.motivo || 'recusa do WhatsApp')}<br>` +
         'O bot parou de responder de propósito: o WhatsApp está recusando os envios e insistir agrava o número. ' +
         '<strong>Atenda manualmente pelo WhatsApp</strong> enquanto isso. ' +
         'Use <em>Testar envio</em>; se a mensagem for entregue, o freio sai sozinho.</p>'
-      : '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
-        'O bot responde normalmente. Se o WhatsApp recusar ' + (f.limite || 3) +
-        ' envios seguidos, o envio para sozinho e a equipe é avisada aqui.</p>') +
+      : parcial
+        ? '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
+          'O bot continua atendendo os demais clientes. Estes contatos estão isolados para não derrubar todo o canal:</p>' +
+          `<ul style="margin:8px 0 0 20px;font-size:13px;color:var(--muted)">${lista}</ul>`
+        : '<p style="font-size:13px;color:var(--faint);margin-top:8px">' +
+          'O bot atende normalmente. O canal só para após ' + (f.limite || 3) +
+          ' recusas seguidas em pelo menos ' + (f.minimoDestinatarios || 3) + ' destinatários distintos.</p>') +
+    (erroDestinos ? `<p style="font-size:12px;color:var(--brand-tint);margin-top:6px">Falha ao consultar contatos isolados: ${esc(erroDestinos)}</p>` : '') +
     (f.ultimaEntrega ? `<p style="font-size:12px;color:var(--faint);margin-top:6px">Última entrega confirmada: ${new Date(f.ultimaEntrega).toLocaleString('pt-BR')}</p>` : '') +
     (f.ultimaRejeicao ? `<p style="font-size:12px;color:var(--faint)">Última recusa: ${new Date(f.ultimaRejeicao).toLocaleString('pt-BR')}</p>` : '');
 }
@@ -1317,27 +1458,43 @@ $('#btnSonda').onclick = async () => {
   const numero = ($('#sondaNum').value || '').replace(/\D/g, '');
   if (numero.length < 10) return toast('Número inválido', 'Informe com DDD, ex.: 88981553041');
   const b = $('#btnSonda');
-  b.disabled = true; b.textContent = 'Testando…';
-  try {
-    const r = await api('/envio/sonda', { method: 'POST', body: JSON.stringify({ numero }) });
-    const j = await r.json();
-    toast(j.entregue ? 'Entregue' : j.rejeitada ? 'REJEITADA' : 'Sem confirmação', j.veredito || j.error || '');
-    refresh();
-  } finally {
-    b.disabled = false; b.textContent = 'Testar envio';
-  }
+  if (!confirm(`Enviar UMA mensagem real de diagnóstico para ${fone(numero)}?\n\n` +
+               'A mensagem chegará no WhatsApp informado e o sistema aguardará o ACK real.')) return;
+  await executarAcao(b, 'Testando…', async () => {
+    const j = await apiJson('/envio/sonda', {
+      method: 'POST', body: JSON.stringify({ numero })
+    });
+    toast(j.entregue ? 'Entregue' : j.rejeitada ? 'REJEITADA' : 'Sem confirmação', j.veredito || '');
+    await refresh();
+  });
 };
 
 $('#btnLiberar').onclick = async () => {
-  if (!confirm('Religar o envio automático?\n\nFaça isto só depois de um "Testar envio" entregue. ' +
-               'Religar com o WhatsApp recusando piora a restrição do número.')) return;
-  const r = await api('/envio/liberar', { method: 'POST' });
-  toast(r.ok ? 'Envio liberado' : 'Falha', r.ok ? 'O bot volta a responder.' : 'Não foi possível.');
-  refresh();
+  if (!confirm('OVERRIDE MANUAL: religar sem exigir uma nova sonda entregue?\n\n' +
+               'Use somente quando você já comprovou manualmente que o WhatsApp voltou. ' +
+               'Uma sonda entregue libera automaticamente e é a opção recomendada.')) return;
+  await executarAcao($('#btnLiberar'), 'Liberando…', async () => {
+    await apiJson('/envio/liberar', {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmar: 'LIBERAR_MANUALMENTE',
+        motivo: 'override manual confirmado pela operadora no dashboard'
+      })
+    });
+    toast('Envio liberado', 'Override manual registrado. Acompanhe os próximos ACKs.');
+    await refresh();
+  });
 };
 
 /* ---------------- Contexto para a atendente ---------------- */
 let ctxAtual = null;
+let focoAntesDoDrawer = null;
+
+function fecharContexto() {
+  $('#drawer').classList.remove('open');
+  if (focoAntesDoDrawer?.isConnected) focoAntesDoDrawer.focus();
+  focoAntesDoDrawer = null;
+}
 
 function abrirContexto(t) {
   ctxAtual = t;
@@ -1366,12 +1523,23 @@ function abrirContexto(t) {
        verificar agenda → informar horário → confirmar valor → fechar agendamento</div>`;
 
   $('#ctxWa').href = 'https://wa.me/' + String(t.phone).replace(/\D/g, '');
+  focoAntesDoDrawer = document.activeElement;
   $('#drawer').classList.add('open');
+  $('#drawer .ctx').focus();
 }
 
-$('#ctxClose').onclick = () => $('#drawer').classList.remove('open');
-$('#drawer').onclick = e => { if (e.target.id === 'drawer') $('#drawer').classList.remove('open'); };
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#drawer').classList.remove('open'); });
+$('#ctxClose').onclick = fecharContexto;
+$('#drawer').onclick = e => { if (e.target.id === 'drawer') fecharContexto(); };
+document.addEventListener('keydown', e => {
+  if (!$('#drawer').classList.contains('open')) return;
+  if (e.key === 'Escape') return fecharContexto();
+  if (e.key !== 'Tab') return;
+  const focaveis = [...$('#drawer').querySelectorAll('a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])')];
+  if (!focaveis.length) return;
+  const primeiro = focaveis[0], ultimo = focaveis[focaveis.length - 1];
+  if (e.shiftKey && document.activeElement === primeiro) { e.preventDefault(); ultimo.focus(); }
+  else if (!e.shiftKey && document.activeElement === ultimo) { e.preventDefault(); primeiro.focus(); }
+});
 
 $('#ctxCopy').onclick = async () => {
   const t = ctxAtual; if (!t) return;
@@ -1398,9 +1566,13 @@ $('#ctxCopy').onclick = async () => {
 $('#ctxBot').onclick = async () => {
   const t = ctxAtual; if (!t) return;
   if (!confirm(`Reativar a triagem automática para ${t.name || t.phone}?`)) return;
-  await api(`/sessions/${encodeURIComponent(t.phone)}/reactivate`, { method:'POST' });
-  toast('Bot reativado', `${t.name || t.phone} volta para a triagem automática.`);
-  $('#drawer').classList.remove('open');
+  try {
+    await apiJson(`/sessions/${encodeURIComponent(t.phone)}/reactivate`, { method:'POST' });
+    toast('Bot reativado', `${t.name || t.phone} volta para a triagem automática.`);
+    fecharContexto();
+  } catch (e) {
+    if (e.status !== 401) toast('Falha ao reativar', e.message);
+  }
 };
 </script>
 </body>

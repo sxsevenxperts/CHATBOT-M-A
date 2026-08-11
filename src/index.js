@@ -3,15 +3,23 @@ import { str, num } from './env.js';
 import express from 'express';
 
 import {
-  initSupabase, keepalive, purgeTestes, registrarEventoConexao, resumoEntrega,
-  ultimoVereditoEnvio
+  initSupabase, keepalive, purgeTestes, registrarEventoConexao, resumoEntrega
 } from './database.js';
-import { setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas } from './webhook.js';
+import {
+  setupWebhook, WEBHOOK_PATH, getInflight, filasAbertas, retomarEntradasWebhook
+} from './webhook.js';
 import { retomarConversas } from './flow.js';
 import { setupAdmin } from './admin.js';
-import { checkConnection, getWebhook, setWebhook, getConfig, reconnect } from './evolution.js';
+import { reconciliarFreioPersistido } from './canal.js';
+import {
+  checkConnection, getWebhook, setWebhook, getConfig, reconnect,
+  webhookTemAutenticacao
+} from './evolution.js';
 import { info, warn, falha, resumo as resumoCaixaPreta } from './recorder.js';
-import { bloquear as engatarFreio, ver as verFreio } from './freio.js';
+import {
+  ver as verFreio,
+  limite as limiteFreio
+} from './freio.js';
 import { setProprioNumero } from './testflag.js';
 
 const PORT = num('PORT', 3000);
@@ -32,6 +40,7 @@ const PUBLIC_URL = str('PUBLIC_URL').replace(/\/+$/, '');
 const state = {
   startedAt: new Date().toISOString(),
   db: { ok: false, error: null },
+  canal: { ok: false, error: 'veredito de envio ainda não restaurado', checkedAt: null },
   keepalive: { enabled: false, everyHours: null, lastOk: null, lastError: null, runs: 0 },
   whatsapp: { ok: false, error: null, info: null, caiuEm: null, tentativas: 0, precisaQr: false },
   entrega: { saudavel: null, enviadas: 0, entregues: 0, semConfirmacao: 0, checadoEm: null },
@@ -39,10 +48,22 @@ const state = {
   env: {}
 };
 
+async function atualizarCanal(origem) {
+  try {
+    const resultado = await reconciliarFreioPersistido(origem);
+    state.canal = { ok: true, error: null, checkedAt: new Date().toISOString() };
+    return resultado;
+  } catch (e) {
+    state.canal = { ok: false, error: e.message, checkedAt: new Date().toISOString() };
+    throw e;
+  }
+}
+
 function checkEnv() {
   const req = ['SUPABASE_URL', 'EVOLUTION_API_URL', 'EVOLUTION_API_KEY', 'EVOLUTION_INSTANCE'];
   const missing = req.filter(k => !str(k));
-  if (!str('SUPABASE_SERVICE_KEY') && !str('SUPABASE_KEY')) missing.push('SUPABASE_SERVICE_KEY');
+  if (!str('SUPABASE_SERVICE_KEY')) missing.push('SUPABASE_SERVICE_KEY');
+  if (!(str('ADMIN_PASSWORD') || str('DASHBOARD_PASSWORD'))) missing.push('ADMIN_PASSWORD');
 
   state.env = {
     missing,
@@ -61,25 +82,36 @@ async function initDependencies() {
   try {
     await initSupabase();
     state.db.ok = true;
+    state.db.error = null;
     info('boot.supabase', { tabelas: 'triages, bot_sessions, messages' });
   } catch (e) {
+    state.db.ok = false;
     state.db.error = e.message;
+    state.canal = { ok: false, error: 'banco indisponível', checkedAt: new Date().toISOString() };
     falha('boot.supabaseFalhou', e);
   }
 
-  // O freio mora em memória. Sem esta pergunta, cada deploy religaria o envio
-  // num canal que o WhatsApp está recusando — e o bot voltaria a insistir.
-  if (state.db.ok && process.env.NODE_ENV !== 'test') {
+  // A memória reflete eventos persistidos (ACK, sonda, bloqueio/liberação
+  // manual). Sem janela de 24 h: passagem do tempo nunca libera o canal.
+  if (state.db.ok) {
     try {
-      const v = await ultimoVereditoEnvio({ horas: 24 });
-      if (v?.recusado) {
-        engatarFreio(`última mensagem com veredito foi RECUSADA pelo WhatsApp (${v.em})`);
-        warn('boot.freioHerdado', { desde: v.em, acao: 'atenda manualmente; teste o envio em /admin' });
+      const { veredito: v, estado: freio } = await atualizarCanal('boot');
+      if (freio.bloqueado) {
+        warn('boot.freioHerdado', { desde: freio.desde, acao: 'atenda manualmente; teste o envio em /admin' });
+      } else if (v?.recusado) {
+        warn('boot.rejeicaoPendente', {
+          seguidas: v.rejeicoesSeguidas,
+          destinatarios: v.destinatariosRejeitados?.length || 0,
+          limite: freio.limite,
+          acao: 'bot segue ativo para os demais destinatários'
+        });
       } else if (v) {
         info('boot.envioOk', { ultimoStatus: v.status, em: v.em });
       }
     } catch (e) {
-      warn('boot.vereditoEnvioFalhou', { erro: e.message });
+      falha('boot.vereditoEnvioFalhou', e, {
+        efeito: 'webhook permanece em 503 para impedir envio com freio desconhecido'
+      });
     }
   }
 
@@ -100,7 +132,11 @@ async function initDependencies() {
 
   // Webhook: aponta para cá sozinho, se soubermos a URL pública.
   if (!PUBLIC_URL) {
-    state.webhook.error = 'PUBLIC_URL não definida — sincronize pelo dashboard';
+    state.webhook = {
+      ...state.webhook,
+      ok: false,
+      error: 'PUBLIC_URL não definida — sincronize pelo dashboard'
+    };
     warn('boot.publicUrlAusente', { efeito: 'webhook não sincroniza sozinho' });
     return;
   }
@@ -118,8 +154,10 @@ async function initDependencies() {
     const atuais = current?.events || [];
     const faltando = EVENTOS.filter(e => !atuais.includes(e));
 
-    if (current?.enabled && current?.url === expected && !faltando.length) {
-      state.webhook = { ok: true, error: null, url: expected, eventos: atuais };
+    const autenticado = webhookTemAutenticacao(current);
+
+    if (current?.enabled && current?.url === expected && !faltando.length && autenticado) {
+      state.webhook = { ok: true, error: null, url: expected, eventos: atuais, autenticado: true };
       info('boot.webhookOk', { url: expected, eventos: atuais.join(',') });
       return;
     }
@@ -127,15 +165,63 @@ async function initDependencies() {
     warn('boot.webhookDivergente', {
       atual: current?.url || '(nenhum)', esperado: expected,
       eventosAtuais: atuais.join(',') || '(nenhum)',
-      faltando: faltando.join(',') || '—'
+      faltando: faltando.join(',') || '—',
+      autenticado
     });
     await setWebhook(expected);
-    state.webhook = { ok: true, error: null, url: expected, eventos: EVENTOS };
+
+    // Não confia apenas no 2xx do /webhook/set. Algumas builds aceitam campos
+    // desconhecidos e os ignoram; somente o read-back prova que URL, eventos e
+    // header secreto foram realmente persistidos.
+    let confirmado = null;
+    for (let tentativa = 0; tentativa < 3; tentativa++) {
+      if (tentativa) await new Promise(resolve => setTimeout(resolve, 250));
+      confirmado = await getWebhook();
+      const eventosConfirmados = confirmado?.events || [];
+      const faltamConfirmados = EVENTOS.filter(e => !eventosConfirmados.includes(e));
+      if (confirmado?.enabled && confirmado?.url === expected &&
+          !faltamConfirmados.length && webhookTemAutenticacao(confirmado)) break;
+      confirmado = null;
+    }
+    if (!confirmado) {
+      throw new Error('Evolution não confirmou URL, eventos e header secreto do webhook após a sincronização');
+    }
+
+    state.webhook = { ok: true, error: null, url: expected, eventos: EVENTOS, autenticado: true };
     info('boot.webhookCorrigido', { url: expected, eventos: EVENTOS.join(',') });
   } catch (e) {
-    state.webhook.error = e?.response?.data ? JSON.stringify(e.response.data) : e.message;
+    state.webhook = {
+      ...state.webhook,
+      ok: false,
+      error: e?.response?.data ? JSON.stringify(e.response.data) : e.message
+    };
     falha('boot.webhookFalhou', e);
   }
+}
+
+function startDependencyRecovery() {
+  let executando = false;
+  const tick = async () => {
+    if (executando || (state.db.ok && state.canal.ok && state.webhook.ok)) return;
+    executando = true;
+    try {
+      warn('boot.dependenciasRetry', {
+        banco: state.db.ok, canal: state.canal.ok, webhook: state.webhook.ok
+      });
+      await initDependencies();
+      if (state.db.ok && state.canal.ok && state.whatsapp.ok && state.webhook.ok) {
+        if (!state.keepalive.enabled) startKeepalive();
+        const pendentes = await retomarEntradasWebhook();
+        info('boot.dependenciasRecuperadas', { inboxPendente: pendentes });
+      }
+    } catch (e) {
+      falha('boot.dependenciasRetryFalhou', e);
+    } finally {
+      executando = false;
+    }
+  };
+  const timer = setInterval(tick, 30_000);
+  timer.unref?.();
 }
 
 /**
@@ -151,6 +237,8 @@ function startConnectionMonitor() {
   if (segundos <= 0) return;
 
   let ultimaTentativa = 0;
+  let ultimaRetomadaInbox = 0;
+  let ultimaChecagemWebhook = 0;
 
   const tick = async () => {
     const antes = state.whatsapp.ok;
@@ -166,6 +254,34 @@ function startConnectionMonitor() {
         tentativas: wa.connected ? 0 : tentativas,
         precisaQr: wa.connected ? false : state.whatsapp.precisaQr
       };
+
+      // URL, eventos e header podem derivar depois do boot. Atualiza o mesmo
+      // estado que controla /health e o gate; se divergir, o recovery abaixo
+      // volta a sincronizar em vez de manter um verde cacheado.
+      if (PUBLIC_URL && Date.now() - ultimaChecagemWebhook > 60_000) {
+        ultimaChecagemWebhook = Date.now();
+        try {
+          const atual = await getWebhook();
+          const eventos = atual?.events || [];
+          const expected = `${PUBLIC_URL}${WEBHOOK_PATH}`;
+          const correto = !!atual?.enabled && atual?.url === expected &&
+            ['MESSAGES_UPSERT', 'MESSAGES_UPDATE'].every(e => eventos.includes(e)) &&
+            webhookTemAutenticacao(atual);
+          state.webhook = correto
+            ? { ok: true, error: null, url: expected, eventos, autenticado: true }
+            : {
+                ok: false,
+                error: 'URL, eventos ou autenticação do webhook divergentes',
+                url: atual?.url || null,
+                eventos,
+                autenticado: webhookTemAutenticacao(atual)
+              };
+          if (!correto) warn('webhook.derivaDetectada', { atual: atual?.url || '—', esperado: expected });
+        } catch (e) {
+          state.webhook = { ...state.webhook, ok: false, error: e.message };
+          falha('webhook.monitorFalhou', e);
+        }
+      }
 
       if (antes && !wa.connected) {
         // Marca o início; só vira "queda" registrada se persistir. Oscilação
@@ -218,6 +334,14 @@ function startConnectionMonitor() {
           falha('whatsapp.reconexaoFalhou', e, { tentativa: tentativas + 1 });
         }
       }
+
+      if (wa.connected && state.db.ok && state.canal.ok && state.webhook.ok &&
+          Date.now() - ultimaRetomadaInbox > 30_000) {
+        ultimaRetomadaInbox = Date.now();
+        retomarEntradasWebhook()
+          .then(n => n && info('webhook.inboxRetomado', { pendentes: n }))
+          .catch(e => falha('webhook.inboxRetomadaFalhou', e));
+      }
     } catch (e) {
       state.whatsapp = {
         ok: false, error: e.message, info: state.whatsapp.info,
@@ -242,34 +366,37 @@ function startConnectionMonitor() {
    */
   const vigiaEntrega = async () => {
     try {
-      const r = await resumoEntrega({ minutos: 30 });
+      // O veredito canônico é requisito de readiness. Se uma leitura falhou
+      // no boot, esta tentativa libera o webhook assim que o banco normalizar.
+      await atualizarCanal('monitor');
+
+      const r = await resumoEntrega({
+        minutos: 30,
+        incluirTestes: process.env.NODE_ENV === 'test'
+      });
       const antes = state.entrega.saudavel;
       state.entrega = { ...r, checadoEm: new Date().toISOString() };
 
-      // Segunda camada do freio: se algum ACK de recusa se perdeu no caminho,
-      // o resumo do banco ainda enxerga a rejeição e para o envio.
-      // Na suíte, quem engata o freio é o ACK (determinístico) — senão este
-      // relógio de 60s engataria no meio de outra seção e a deixaria instável.
-      if (r.rejeitadas > 0 && !verFreio().bloqueado && process.env.NODE_ENV !== 'test') {
-        engatarFreio(`${r.rejeitadas} mensagens recusadas pelo WhatsApp nos últimos ${r.minutos} min`);
-      }
-
       if (r.saudavel === false && antes !== false) {
-        const rejeitou = r.rejeitadas > 0;
+        const rejeitou = r.ultimoStatus === 'ERROR';
+        const bloqueou = verFreio().bloqueado;
         falha('entrega.falhando',
           new Error(rejeitou
-            ? `${r.rejeitadas} mensagens REJEITADAS pelo WhatsApp (status ERROR)`
+            ? `${r.rejeicoesSeguidas} mensagem(ns) seguida(s) REJEITADA(S) pelo WhatsApp (status ERROR)`
             : `${r.semConfirmacao} mensagens sem confirmação`),
           {
             enviadas: r.enviadas, entregues: r.entregues, rejeitadas: r.rejeitadas,
             acao: rejeitou
-              ? 'o WhatsApp está recusando os envios: freio engatado, atenda manualmente. Repareaar NÃO resolve (testado em 08/08/2026) — use "Testar envio" antes de religar'
+              ? bloqueou
+                ? 'recusas consecutivas atingiram o limite: freio engatado, atenda manualmente e use "Testar envio" antes de religar'
+                : `recusa isolada (${r.rejeicoesSeguidas}/${limiteFreio()}): o bot segue ativo; confirme o destinatário e acompanhe o próximo ACK`
               : 'a Evolution aceita mas o WhatsApp não entrega — use "Desconectar e pareear"'
           });
       } else if (r.saudavel === true && antes === false) {
         info('entrega.normalizou', { entregues: r.entregues, enviadas: r.enviadas });
       }
     } catch (e) {
+      state.canal = { ok: false, error: e.message, checkedAt: new Date().toISOString() };
       falha('entrega.checagemFalhou', e);
     }
   };
@@ -287,6 +414,7 @@ function startConnectionMonitor() {
  * for parado por muitos dias, só o plano Pro garante que nada pause.
  */
 function startKeepalive() {
+  if (state.keepalive.enabled) return;
   const hours = num('KEEPALIVE_HOURS', 6);
   if (hours <= 0) {
     info('keepalive.desativado', { motivo: 'KEEPALIVE_HOURS=0' });
@@ -322,15 +450,21 @@ function buildApp() {
 
   // Sempre 200: o proxy precisa de uma resposta para não devolver 502.
   // O corpo diz se algo está degradado.
-  app.get('/health', (_req, res) => res.json({
+  app.get('/health', (_req, res) => {
+    const ready = state.db.ok && state.canal.ok && state.whatsapp.ok && state.webhook.ok;
+    const freio = verFreio();
+    res.json({
     ok: state.db.ok,
-    ready: state.db.ok && state.whatsapp.ok,
+    ready,
+    operational: ready && !freio.bloqueado,
     uptime: Math.round(process.uptime()),
     inflight: getInflight(),
     filasPorTelefone: filasAbertas(),
     entrega: state.entrega,
-    freio: verFreio(),
+    freio,
     config: {
+      instance: str('EVOLUTION_INSTANCE'),
+      webhookProtegido: !!state.webhook.autenticado,
       rearmeHoras: num('REARM_HOURS', 24),
       delayMs: [num('REPLY_DELAY_MIN_MS', 3000), num('REPLY_DELAY_MAX_MS', 5000)],
       keepaliveHoras: num('KEEPALIVE_HOURS', 6),
@@ -338,7 +472,8 @@ function buildApp() {
     },
     caixaPreta: resumoCaixaPreta(),
     ...state
-  }));
+    });
+  });
 
   /**
    * Ping público que TOCA o banco.
@@ -370,16 +505,21 @@ function buildApp() {
 
   app.get('/', (_req, res) => res.redirect('/admin'));
 
-  setupWebhook(app);
+  setupWebhook(app, {
+    isReady: () => state.db.ok && state.canal.ok && state.whatsapp.ok && state.webhook.ok
+  });
   setupAdmin(app, { publicUrl: PUBLIC_URL, state });
 
   app.use((req, res) => res.status(404).json({ error: 'not found', path: req.path }));
   return app;
 }
 
+const servidores = [];
+
 function listen(app, port) {
   return new Promise(resolve => {
     const server = app.listen(port, '0.0.0.0', () => {
+      servidores.push(server);
       info('boot.escutando', { porta: port });
       resolve(server);
     });
@@ -407,6 +547,15 @@ async function main() {
 
   await initDependencies();
 
+  if (state.db.ok && state.canal.ok && state.whatsapp.ok && state.webhook.ok) {
+    try {
+      const pendentes = await retomarEntradasWebhook();
+      if (pendentes) info('boot.webhookInbox', { pendentes });
+    } catch (e) {
+      falha('boot.webhookInboxFalhou', e);
+    }
+  }
+
   // Fora de ambiente de teste, o banco de produção não guarda dado de teste.
   if (state.db.ok && str('NODE_ENV') !== 'test') {
     try {
@@ -419,6 +568,7 @@ async function main() {
   }
 
   if (state.db.ok) startKeepalive();
+  startDependencyRecovery();
   startConnectionMonitor();
 
   const base = PUBLIC_URL || `http://localhost:${PORT}`;
@@ -443,4 +593,20 @@ main().catch(err => {
 });
 
 process.on('unhandledRejection', r => console.error('[unhandledRejection]', r));
-process.on('SIGTERM', () => { console.log('[shutdown] SIGTERM'); process.exit(0); });
+
+let encerrando = false;
+async function shutdown(sinal) {
+  if (encerrando) return;
+  encerrando = true;
+  console.log(`[shutdown] ${sinal} — drenando processamento em voo`);
+  servidores.forEach(server => server.close(() => {}));
+  const limite = Date.now() + 20_000;
+  while (getInflight() > 0 && Date.now() < limite) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  console.log(`[shutdown] concluído; inflight=${getInflight()}`);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(1)); });
+process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(1)); });

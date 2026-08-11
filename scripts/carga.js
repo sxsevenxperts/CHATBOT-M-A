@@ -1,216 +1,245 @@
 #!/usr/bin/env node
 /**
- * Teste de carga e de concorrência.
+ * Carga local segura: Evolution falsa + Supabase de teste.
+ * Nenhuma mensagem real de WhatsApp é enviada.
  *
- * Sobe uma Evolution FALSA (nenhuma mensagem real sai) e roda o app de verdade
- * contra o Supabase de verdade, com o delay humanizado desligado para medir o
- * custo do sistema e não o da pausa proposital.
+ * Uso recomendado:
+ *   SUPABASE_TEST_URL=... SUPABASE_TEST_SERVICE_KEY=... npm run carga -- 40
  *
- * Mede duas coisas diferentes:
- *   1. VAZÃO — N conversas simultâneas percorrendo o fluxo inteiro
- *   2. CORRIDA — duas mensagens do MESMO número chegando juntas
- *
- * A segunda é a que importa: cliente que digita rápido manda duas mensagens
- * antes da primeira ser processada.
- *
- *   node scripts/carga.js [conversas]
+ * Banco compartilhado exige opt-in explícito:
+ *   CARGA_ALLOW_SHARED_SUPABASE=I_UNDERSTAND npm run carga -- 20
  */
 import express from 'express';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const N = Number(process.argv[2]) || 40;
+const N = Math.min(100, Math.max(1, Number(process.argv[2]) || 40));
 const MOCK_PORT = 4210;
 const APP_PORT = 4211;
-const BASE = 5588100000000;
+const RUN = crypto.randomBytes(6).toString('hex');
+const INSTANCE = `carga-${RUN}-${process.pid}`;
+const WEBHOOK_SECRET = `carga-webhook-${RUN}`;
+const ADMIN_PASSWORD = `carga-admin-${RUN}`;
+const PHONE_SEED = (BigInt(`0x${RUN}`) % 10_000_000_000n).toString().padStart(10, '0');
+const phone = i => `000${PHONE_SEED}${String(i).padStart(4, '0')}`;
+const telefones = Array.from({ length: N }, (_, i) => phone(i + 1));
+const RACE_PHONE = phone(9999);
+const TEST_PHONES = [...telefones, RACE_PHONE];
 
+const SUPABASE_URL = process.env.SUPABASE_TEST_URL || process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const compartilhado = !process.env.SUPABASE_TEST_URL || !process.env.SUPABASE_TEST_SERVICE_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Carga exige SUPABASE_TEST_URL e SUPABASE_TEST_SERVICE_KEY');
+}
+if (compartilhado && process.env.CARGA_ALLOW_SHARED_SUPABASE !== 'I_UNDERSTAND') {
+  throw new Error(
+    'Carga bloqueada: use Supabase de teste ou confirme CARGA_ALLOW_SHARED_SUPABASE=I_UNDERSTAND'
+  );
+}
+
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+const { data: schemaVersion, error: schemaError } = await sb.rpc('chatbot_schema_version');
+if (schemaError || Number(schemaVersion) !== 2026080801) {
+  throw new Error(`Carga exige setup.sql 2026080801: ${schemaError?.message || schemaVersion}`);
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const fmt = n => Number(n || 0).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
 const enviadas = [];
-let pico = 0, emVoo = 0;
+let pico = 0;
+let mockServer = null;
+let child = null;
+let childLog = '';
+let falhou = false;
 
-const mock = express();
-mock.use(express.json());
-mock.get('/', (_q, r) => r.json({ version: 'carga' }));
-mock.get('/instance/fetchInstances', (_q, r) => r.json([{
-  name: '3041', connectionStatus: 'open', ownerJid: '558881553041@s.whatsapp.net', profileName: 'carga'
-}]));
-mock.post('/chat/sendPresence/:i', (_q, r) => r.json({ ok: true }));
-mock.post('/message/sendText/:i', (q, r) => {
-  enviadas.push({ number: q.body.number, text: q.body.text, at: Date.now() });
-  r.json({ key: { id: 'M' + enviadas.length } });
-});
-mock.get('/webhook/find/:i', (_q, r) => r.json({ enabled: true, url: `http://localhost:${APP_PORT}/webhook/messages`, events: ['MESSAGES_UPSERT'] }));
-mock.post('/webhook/set/:i', (q, r) => r.json({ ...q.body.webhook }));
-const mockServer = mock.listen(MOCK_PORT);
-
-const telefones = Array.from({ length: N }, (_, i) => String(BASE + i));
-
-const app = spawn(process.execPath, ['src/index.js'], {
-  env: {
-    ...process.env,
-    EVOLUTION_API_URL: `http://localhost:${MOCK_PORT}`,
-    PORT: String(APP_PORT), ALT_PORT: String(APP_PORT),
-    PUBLIC_URL: `http://localhost:${APP_PORT}`,
-    REPLY_DELAY_MIN_MS: '0', REPLY_DELAY_MAX_MS: '0',   // mede o sistema, não a pausa
-    KEEPALIVE_HOURS: '0', NODE_ENV: 'test',
-    TEST_PHONES: telefones.join(',')
-  },
-  stdio: ['ignore', 'pipe', 'pipe']
-});
-let log = '';
-app.stdout.on('data', d => { log += d; });
-app.stderr.on('data', d => { log += d; });
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const sb = createClient(process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY, { auth: { persistSession: false } });
-
-async function subiu() {
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`http://localhost:${APP_PORT}/health`)).ok) return true; } catch {}
-    await sleep(300);
+async function limpar() {
+  for (const tabela of ['messages', 'triages', 'bot_sessions']) {
+    let q = sb.from(tabela).delete().in('phone', TEST_PHONES).eq('is_test', true);
+    if (tabela === 'messages') q = q.eq('instance', INSTANCE);
+    const { error } = await q;
+    if (error) throw new Error(`limpeza ${tabela}: ${error.message}`);
   }
-  return false;
 }
 
-async function inflight() {
-  try { return (await (await fetch(`http://localhost:${APP_PORT}/health`)).json()).inflight; }
-  catch { return -1; }
+async function waitReady() {
+  let ultimo = null;
+  for (let i = 0; i < 100; i++) {
+    try {
+      ultimo = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+      if (ultimo.ready) return ultimo;
+    } catch {}
+    await sleep(250);
+  }
+  throw new Error(`app não ficou ready: ${JSON.stringify(ultimo)}\n${childLog.slice(-2000)}`);
 }
 
-async function quiesce(limite = 120000) {
-  const fim = Date.now() + limite;
+async function quiesce(timeoutMs = 120_000) {
+  const fim = Date.now() + timeoutMs;
   await sleep(80);
   while (Date.now() < fim) {
-    const n = await inflight();
-    if (n > pico) pico = n;
-    if (n === 0) { await sleep(150); return true; }
+    const health = await (await fetch(`http://localhost:${APP_PORT}/health`)).json();
+    pico = Math.max(pico, Number(health.inflight) || 0);
+    if (!health.inflight && !health.filasPorTelefone) {
+      await sleep(120);
+      return;
+    }
     await sleep(60);
   }
-  return false;
+  throw new Error('processamento não drenou no tempo esperado');
 }
 
-function post(phone, texto, id) {
-  return fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+async function post(phone_, texto, id = crypto.randomUUID()) {
+  const response = await fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-evolution-webhook-secret': WEBHOOK_SECRET },
     body: JSON.stringify({
-      event: 'messages.upsert', instance: '3041',
+      event: 'messages.upsert',
+      instance: INSTANCE,
       data: {
-        key: { remoteJid: `${phone}@s.whatsapp.net`, fromMe: false, id: id || `${phone}-${Math.random().toString(36).slice(2, 8)}` },
-        pushName: 'Carga', message: { conversation: texto },
-        messageType: 'conversation', messageTimestamp: Math.floor(Date.now() / 1000)
+        key: { remoteJid: `${phone_}@s.whatsapp.net`, fromMe: false, id },
+        pushName: 'Carga',
+        message: { conversation: texto },
+        messageType: 'conversation',
+        messageTimestamp: Math.floor(Date.now() / 1000)
       }
     })
   });
+  if (!response.ok) throw new Error(`webhook ${response.status}: ${await response.text()}`);
 }
-
-async function limpar() {
-  for (const t of ['messages', 'triages', 'bot_sessions']) {
-    await sb.from(t).delete().in('phone', telefones);
-  }
-}
-
-const fmt = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
 
 try {
-  console.log(`\n\x1b[1m═══ CARGA · ${N} conversas simultâneas ═══\x1b[0m`);
-  if (!await subiu()) { console.error('app não subiu:\n' + log); process.exit(1); }
-  await limpar();
+  const mock = express();
+  mock.use(express.json());
+  let webhook = {
+    enabled: true,
+    url: `http://localhost:${APP_PORT}/webhook/messages`,
+    events: ['MESSAGES_UPSERT'],
+    headers: null
+  };
+  mock.get('/', (_req, res) => res.json({ version: '2.3.7-carga' }));
+  mock.get('/instance/fetchInstances', (_req, res) => res.json([{
+    name: INSTANCE,
+    connectionStatus: 'open',
+    ownerJid: '00000000000000000@s.whatsapp.net',
+    profileName: 'Carga (mock)',
+    token: 'carga-evolution-key'
+  }]));
+  mock.post('/chat/sendPresence/:instance', (_req, res) => res.json({ ok: true }));
+  mock.post('/message/sendText/:instance', (req, res) => {
+    const waId = `${INSTANCE}-OUT-${enviadas.length + 1}`;
+    enviadas.push({ number: req.body.number, text: req.body.text, at: Date.now(), waId });
+    res.json({ key: { id: waId }, status: 'PENDING' });
+    setTimeout(() => {
+      fetch(`http://localhost:${APP_PORT}/webhook/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-evolution-webhook-secret': WEBHOOK_SECRET },
+        body: JSON.stringify({
+          event: 'messages.update', instance: INSTANCE,
+          data: { keyId: waId, status: 'DELIVERY_ACK' }
+        })
+      }).catch(() => {});
+    }, 15);
+  });
+  mock.get('/webhook/find/:instance', (_req, res) => res.json(webhook));
+  mock.post('/webhook/set/:instance', (req, res) => {
+    webhook = { ...webhook, ...(req.body.webhook || {}) };
+    res.json(webhook);
+  });
 
-  /* ---------------- 1 · Vazão ---------------- */
-  // Percurso: oi → nome → intenção → categoria → modelo → serviço → nível → período → data → confirma
+  mockServer = await new Promise((resolve, reject) => {
+    const server = mock.listen(MOCK_PORT, () => resolve(server));
+    server.once('error', reject);
+  });
+
+  child = spawn(process.execPath, ['src/index.js'], {
+    env: {
+      ...process.env,
+      SUPABASE_URL,
+      SUPABASE_SERVICE_KEY: SUPABASE_KEY,
+      EVOLUTION_API_URL: `http://localhost:${MOCK_PORT}`,
+      EVOLUTION_API_KEY: 'carga-evolution-key',
+      EVOLUTION_INSTANCE: INSTANCE,
+      EVOLUTION_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ADMIN_PASSWORD,
+      PORT: String(APP_PORT),
+      ALT_PORT: String(APP_PORT),
+      PUBLIC_URL: `http://localhost:${APP_PORT}`,
+      REPLY_DELAY_MIN_MS: '0',
+      REPLY_DELAY_MAX_MS: '0',
+      KEEPALIVE_HOURS: '0',
+      MONITOR_SECONDS: '1',
+      TEST_PHONES: TEST_PHONES.join(','),
+      NODE_ENV: 'test'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  child.stdout.on('data', data => { childLog += data; });
+  child.stderr.on('data', data => { childLog += data; });
+  child.on('error', error => { childLog += `\n[spawn] ${error.message}`; });
+
+  await waitReady();
+  await limpar();
+  console.log(`\n\x1b[1m═══ CARGA SEGURA · ${N} conversas ═══\x1b[0m`);
+
   const roteiro = ['oi', 'Sérgio', '1', '3', 'Jeep Compass', '1', '2', '1', '3', '1'];
-
-  console.log(`\n\x1b[1m1 · Vazão\x1b[0m`);
-  console.log(`  ${roteiro.length} mensagens por conversa · ${N * roteiro.length} mensagens no total`);
-
-  const t0 = Date.now();
-  const marcos = [];
-
-  for (let passo = 0; passo < roteiro.length; passo++) {
-    const tp = Date.now();
-    // Todas as conversas mandam a mensagem do passo ao mesmo tempo.
-    await Promise.all(telefones.map(p => post(p, roteiro[passo])));
-    const ok = await quiesce();
-    marcos.push({ passo: passo + 1, texto: roteiro[passo], ms: Date.now() - tp, ok });
-    if (!ok) { console.log(`  \x1b[31mnão drenou no passo ${passo + 1}\x1b[0m`); break; }
+  const inicio = Date.now();
+  for (const texto of roteiro) {
+    await Promise.all(telefones.map(p => post(p, texto)));
+    await quiesce();
   }
+  const total = Date.now() - inicio;
+  const totalEntradas = N * roteiro.length;
 
-  const total = Date.now() - t0;
-  const msgs = N * roteiro.length;
+  const { data: triagens, error: triError } = await sb.from('triages')
+    .select('phone,name,category,vehicle,service,level,period,date_pref')
+    .in('phone', telefones).eq('is_test', true);
+  if (triError) throw triError;
+  const completas = (triagens || []).filter(t =>
+    t.category && t.vehicle && t.service && t.level && t.period && t.date_pref
+  );
+  const duplicadas = (triagens || []).length - new Set((triagens || []).map(t => t.phone)).size;
 
-  for (const m of marcos) {
-    const porMsg = m.ms / N;
-    console.log(`  passo ${String(m.passo).padStart(2)} "${m.texto.slice(0, 14).padEnd(14)}" ${String(m.ms).padStart(6)} ms · ${fmt(porMsg)} ms/conversa`);
-  }
+  console.log(`  duração             ${fmt(total / 1000)} s`);
+  console.log(`  vazão               ${fmt(totalEntradas / (total / 1000))} mensagens/s`);
+  console.log(`  pico em voo         ${pico}`);
+  console.log(`  triagens            ${triagens?.length || 0}/${N}`);
+  console.log(`  contexto completo   ${completas.length}/${N}`);
+  console.log(`  duplicadas          ${duplicadas}`);
 
-  console.log(`\n  total            ${fmt(total / 1000)} s`);
-  console.log(`  vazão            ${fmt(msgs / (total / 1000))} mensagens/s`);
-  console.log(`  por mensagem     ${fmt(total / msgs)} ms`);
-  console.log(`  pico simultâneo  ${pico} em processamento`);
-
-  /* ---------------- 2 · Integridade ---------------- */
-  console.log(`\n\x1b[1m2 · Integridade sob carga\x1b[0m`);
-  const { data: tri } = await sb.from('triages').select('phone,name,category,vehicle,service,level,period,date_pref').in('phone', telefones);
-  const completas = (tri || []).filter(t => t.category && t.vehicle && t.service && t.level && t.period && t.date_pref);
-
-  console.log(`  triagens gravadas       ${tri?.length ?? 0}/${N}`);
-  console.log(`  com contexto completo   ${completas.length}/${N}`);
-  const dup = (tri || []).length - new Set((tri || []).map(t => t.phone)).size;
-  console.log(`  duplicadas              ${dup}`);
-
-  const respostasPorConversa = telefones.map(p => enviadas.filter(e => e.number === p).length);
-  const min = Math.min(...respostasPorConversa), max = Math.max(...respostasPorConversa);
-  console.log(`  respostas por conversa  min ${min} · max ${max} (esperado ${roteiro.length})`);
-
-  /* ---------------- 3 · Corrida no mesmo número ---------------- */
-  console.log(`\n\x1b[1m3 · Corrida: duas mensagens do mesmo número ao mesmo tempo\x1b[0m`);
-  const R = '5588199999901';
-  await sb.from('triages').delete().eq('phone', R);
-  await sb.from('bot_sessions').delete().eq('phone', R);
-  await sb.from('messages').delete().eq('phone', R);
-
-  const antes = enviadas.length;
-  // Cliente digita rápido: "oi" e o nome saem juntos, sem esperar a resposta.
-  await Promise.all([post(R, 'oi', 'race-1'), post(R, 'Sérgio', 'race-2')]);
+  console.log('\n\x1b[1mCorrida no mesmo telefone\x1b[0m');
+  await Promise.all([
+    post(RACE_PHONE, 'oi', `${RUN}-race-1`),
+    post(RACE_PHONE, 'Sérgio', `${RUN}-race-2`)
+  ]);
   await quiesce();
+  const { data: sessao, error: sessaoError } = await sb.from('bot_sessions')
+    .select('step,data').eq('phone', RACE_PHONE).eq('is_test', true).maybeSingle();
+  if (sessaoError) throw sessaoError;
+  console.log(`  passo final         ${sessao?.step || '—'}`);
+  console.log(`  nome capturado      ${sessao?.data?.name || '—'}`);
 
-  const respostas = enviadas.slice(antes).filter(e => e.number === R);
-  const sess = (await sb.from('bot_sessions').select('*').eq('phone', R)).data?.[0];
-
-  console.log(`  respostas enviadas      ${respostas.length}`);
-  respostas.forEach((r, i) => console.log(`    ${i + 1}. ${r.text.split('\n')[0].slice(0, 62)}`));
-  console.log(`  passo final da sessão   ${sess?.step}`);
-  console.log(`  nome capturado          ${sess?.data?.name ?? '(nenhum)'}`);
-
-  const perguntouNomeDuasVezes = respostas.filter(r => /qual é o seu nome/i.test(r.text)).length > 1;
-  const avancou = sess?.step === 'ask_intent' || sess?.data?.name;
-
-  if (perguntouNomeDuasVezes) console.log(`  \x1b[31m✖ perguntou o nome duas vezes — corrida confirmada\x1b[0m`);
-  else if (!avancou) console.log(`  \x1b[31m✖ perdeu a segunda mensagem — corrida confirmada\x1b[0m`);
-  else console.log(`  \x1b[32m✔ serializou corretamente\x1b[0m`);
-
-  await sb.from('triages').delete().eq('phone', R);
-  await sb.from('bot_sessions').delete().eq('phone', R);
-  await sb.from('messages').delete().eq('phone', R);
-
-  /* ---------------- 4 · Volume gerado ---------------- */
-  console.log(`\n\x1b[1m4 · Volume de dados por conversa\x1b[0m`);
-  const { data: msgsDb } = await sb.from('messages').select('body').in('phone', telefones);
-  const bytes = (msgsDb || []).reduce((a, m) => a + Buffer.byteLength(m.body || '', 'utf8'), 0);
-  console.log(`  mensagens no banco      ${msgsDb?.length ?? 0} (${fmt((msgsDb?.length ?? 0) / N)} por conversa)`);
-  console.log(`  texto armazenado        ${fmt(bytes / 1024)} KB (${fmt(bytes / N / 1024)} KB por conversa)`);
-  console.log(`  projeção 100/dia        ${fmt(bytes / N * 100 * 30 / 1048576)} MB/mês só de mensagens`);
-
-} catch (e) {
-  console.error('\nfalhou:', e.message);
-  console.error(log.split('\n').slice(-15).join('\n'));
+  if ((triagens?.length || 0) !== N || completas.length !== N || duplicadas !== 0) {
+    throw new Error('integridade sob carga fora do esperado');
+  }
+  console.log('\n  \x1b[32m✔ carga concluída sem enviar WhatsApp real\x1b[0m');
+} catch (error) {
+  falhou = true;
+  console.error(`\n\x1b[31m✖ carga falhou:\x1b[0m ${error.message}`);
+  if (childLog) console.error(childLog.split('\n').slice(-20).join('\n'));
 } finally {
-  await limpar();
-  app.kill('SIGKILL');
-  mockServer.close();
-  console.log('');
-  process.exit(0);
+  try { await limpar(); } catch (error) { falhou = true; console.error(`limpeza: ${error.message}`); }
+  if (child && child.exitCode == null) {
+    child.kill('SIGTERM');
+    await Promise.race([
+      new Promise(resolve => child.once('exit', resolve)),
+      sleep(5000).then(() => { if (child.exitCode == null) child.kill('SIGKILL'); })
+    ]);
+  }
+  if (mockServer) await new Promise(resolve => mockServer.close(resolve));
+  process.exitCode = falhou ? 1 : 0;
 }

@@ -1,6 +1,7 @@
 import './env.js';
 import { str } from './env.js';
 import axios from 'axios';
+import crypto from 'node:crypto';
 
 /**
  * Cliente da Evolution API v2.
@@ -49,6 +50,63 @@ function client() {
 export function getConfig() {
   const c = conf();
   return { baseUrl: c.baseUrl, instance: c.instance };
+}
+
+export const WEBHOOK_SECRET_HEADER = 'x-evolution-webhook-secret';
+
+/**
+ * Segredo usado exclusivamente entre a Evolution e esta rota de webhook.
+ *
+ * Se WEBHOOK_SECRET não estiver configurado, deriva um token irreversível da
+ * chave da Evolution. Assim a instalação existente passa a ter autenticação
+ * sem expor a própria API key nos headers ou exigir uma mudança manual no
+ * EasyPanel antes do deploy.
+ */
+export function getWebhookSecret() {
+  const explicito = str('EVOLUTION_WEBHOOK_SECRET');
+  if (explicito) return explicito;
+  const apiKey = conf().apiKey;
+  if (!apiKey) return '';
+  return crypto.createHash('sha256')
+    .update(`m&a:webhook:${apiKey}`)
+    .digest('hex');
+}
+
+export function getWebhookHeaders() {
+  const secret = getWebhookSecret();
+  return secret ? { [WEBHOOK_SECRET_HEADER]: secret } : {};
+}
+
+function headerValue(headers, name) {
+  if (!headers || typeof headers !== 'object') return '';
+  const chave = Object.keys(headers).find(k => k.toLowerCase() === name.toLowerCase());
+  return chave ? String(headers[chave] || '') : '';
+}
+
+export function webhookTemAutenticacao(webhook) {
+  const recebido = headerValue(webhook?.headers || webhook?.webhookHeaders, WEBHOOK_SECRET_HEADER);
+  const esperado = getWebhookSecret();
+  if (!recebido || !esperado) return false;
+  const a = Buffer.from(recebido);
+  const b = Buffer.from(esperado);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export function validarWebhookSecret(recebido) {
+  const esperado = getWebhookSecret();
+  if (!recebido || !esperado) return false;
+  const a = Buffer.from(String(recebido));
+  const b = Buffer.from(esperado);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Compatibilidade segura para eventos emitidos antes do rollout do header. */
+export function validarEvolutionApiKey(recebida) {
+  const esperada = conf().apiKey;
+  if (!recebida || !esperada) return false;
+  const a = Buffer.from(String(recebida));
+  const b = Buffer.from(esperada);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 /** Confere que a API responde e que a instância está conectada. */
@@ -197,8 +255,9 @@ export async function setWebhook(url) {
     webhook: {
       enabled: true,
       url,
-      webhookByEvents: false,
-      webhookBase64: false,
+      headers: getWebhookHeaders(),
+      byEvents: false,
+      base64: false,
       // MESSAGES_UPSERT: mensagens que chegam.
       // MESSAGES_UPDATE: os ACKs de entrega das que saem — é o que revela
       //   envio aceito e não entregue, que antes era invisível.

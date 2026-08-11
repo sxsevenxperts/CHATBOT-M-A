@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "check": "node --check src/index.js && node --check src/flow.js && node --check src/webhook.js && node --check src/admin.js && node --check src/evolution.js && node --check src/database.js",
+    "check": "node --check src/index.js && node --check src/flow.js && node --check src/webhook.js && node --check src/admin.js && node --check src/evolution.js && node --check src/database.js && node --check src/freio.js && node --check src/canal.js && node --check scripts/doctor.js && node --check scripts/e2e.js && node --check scripts/carga.js",
     "doctor": "node scripts/doctor.js",
     "test": "node scripts/e2e.js",
     "carga": "node scripts/carga.js"
