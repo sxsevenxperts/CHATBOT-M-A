@@ -6,14 +6,14 @@ Atualizado em 11/08/2026. Estados separados: **local**, **validado**, **commitad
 
 | Frente | Local | Validado | Commitado | Publicado | Produção |
 |---|---:|---:|---:|---:|---:|
-| Freio global/per-contacto e ACK monotônico | sim | sim | não | não | pendente |
-| Inbox durável, claim/CAS e drain | sim | sim | não | não | pendente |
-| Webhook autenticado e read-back | sim | sim | não | não | pendente |
-| Dashboard por camadas e segurança | sim | sim | não | não | pendente |
-| `setup.sql`/RPC/schema `2026080801` | sim | sim no projeto alvo | não | não | migração aplicada; runtime pendente |
-| E2E Evolution falsa | sim | **272/272** | não | não | não aplicável |
-| `npm run check` | sim | **passou** | não | não | não aplicável |
-| Manual e roadmap | sim | revisão documental | não | não | não aplicável |
+| Freio global/per-contacto e ACK monotônico | sim | sim | sim | não | pendente |
+| Inbox durável, claim/CAS e drain | sim | sim | sim | não | pendente |
+| Webhook autenticado e read-back | sim | sim | sim | não | pendente |
+| Dashboard por camadas e segurança | sim | sim | sim | não | pendente |
+| `setup.sql`/RPC/schema `2026080801` | sim | sim no projeto alvo | sim | não | migração aplicada; runtime pendente |
+| E2E Evolution falsa | sim | **272/272** | sim | não | não aplicável |
+| `npm run check` | sim | **passou** | sim | não | não aplicável |
+| Manual e roadmap | sim | revisão documental | sim | não | não aplicável |
 
 ## P0 — liberar a publicação
 
@@ -27,8 +27,8 @@ Atualizado em 11/08/2026. Estados separados: **local**, **validado**, **commitad
 - [x] Tornar E2E/carga seguros para fixtures inválidas e limpeza escopada.
 - [x] Aplicar `setup.sql` no Supabase alvo e verificar a função de versão.
 - [x] Rodar `npm run check` e E2E completo: 272 verificações aprovadas.
-- [ ] Criar commit limpo após revisão do diff.
-- [ ] Fazer push e confirmar paridade remota.
+- [x] Criar commit limpo após revisão do diff (`4b7fd9b`).
+- [x] Fazer push para `origin/main`.
 
 ## P1 — deploy controlado
 
@@ -39,6 +39,11 @@ Atualizado em 11/08/2026. Estados separados: **local**, **validado**, **commitad
 - [ ] Fazer uma única sonda real somente após autorização explícita.
 - [ ] Rotacionar a chave da Evolution exposta na conversa e atualizar variáveis.
 - [ ] Fazer backfill controlado de `messages.instance` e só depois avaliar `NOT NULL`.
+
+**Bloqueio atual:** o painel EasyPanel em `https://qfotry.easypanel.host` exige
+login e não há sessão autenticada disponível nesta execução. O GitHub não possui
+webhook de auto-deploy configurado; após autenticar no painel, acione o deploy do
+commit `4b7fd9b` e retome a validação de produção.
 
 ## P1 — robustez estrutural
 
